@@ -1,7 +1,7 @@
 import { FiPlay } from "react-icons/fi";
 import { PiPause } from "react-icons/pi";
 import ScanStatus from "./ScanStatus";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useExtractProgressTable } from "@/utils/useExtractProgress";
 import { gm } from "@/utils/GameDbManager";
 import { manager } from "@/utils/DbManager";
@@ -19,6 +19,18 @@ export default function ExtractToolBar({ title, id }: { title: string, id: numbe
     const setTotalResult = useExtractProgressTable((state) => state.setTotalResult);
     const [isScanStart, setIsScanStart] = useState(false);
     const [isScanEnd, setIsScanEnd] = useState<boolean>(false);
+    // 项目是否已扫描/提取完成（project_info.status>=2）。
+    // 完成后再点按钮要能触发"重新扫描"，否则只会空跑提取（assets 全为 status=2，提取列表为空）。
+    const [isCompleted, setIsCompleted] = useState(false);
+
+    useEffect(() => {
+        if (!id) return;
+        let alive = true;
+        manager.selectProjectInfo(id).then((info) => {
+            if (alive && (info?.status ?? 0) >= 2) setIsCompleted(true);
+        }).catch(() => { });
+        return () => { alive = false; };
+    }, [id]);
 
 
     const handleScanBtn = async () => {
@@ -53,6 +65,35 @@ export default function ExtractToolBar({ title, id }: { title: string, id: numbe
             error(`扫描/提取任务失败: ${e}`)
             setStatus(0)
             setIsScanEnd(false)
+        } finally {
+            setIsScanStart(false);
+        }
+    }
+    // 重新扫描：项目已提取完成后，需要按当前提取语言设置重扫资源并重新提取。
+    // 后端 ScanAsync 会把已登记文件的 status 重置为 0，ExtractAsync 才会重新处理；
+    // 文本写入靠 text_origin 唯一索引保证幂等（见 game_migrations/006）。
+    const handleRescanBtn = async () => {
+        if (!id) return;
+        setStatus(1);
+        setIsScanStart(true);
+        setIsScanEnd(false);
+        setVal(0);
+        setScanned(0);
+        setTotal(0);
+        setTotalResult(0);
+        setIsFirstScan(true);
+        try {
+            await assetApi.scan(title);
+            setIsScanEnd(true);
+            await manager.updateProjectStatus(id, 2);
+            await assetApi.extract();
+            await manager.updateProjectStatus(id, 3);
+            setVal(100);
+            setIsCompleted(true);
+        } catch (e) {
+            error(`重新扫描失败: ${e}`);
+            setStatus(0);
+            setIsScanEnd(false);
         } finally {
             setIsScanStart(false);
         }
@@ -112,12 +153,13 @@ export default function ExtractToolBar({ title, id }: { title: string, id: numbe
                                 </button>
                             )
                         ) : (
-                            <button onClick={handleScanBtn} className="w-14 h-6 gap-1 
+                            <button onClick={isCompleted ? handleRescanBtn : handleScanBtn}
+                                className={`${isCompleted ? "w-20" : "w-14"} h-6 gap-1 
                                 flex items-center justify-center cursor-pointer 
                                 text-semibold rounded-sm text-white text-xs 
-                                bg-[#0067c0] hover:bg-[#0067c0]/70">
+                                bg-[#0067c0] hover:bg-[#0067c0]/70`}>
                                 <FiPlay />
-                                <span className="select-none">扫描</span>
+                                <span className="select-none">{isCompleted ? "重新扫描" : "扫描"}</span>
                             </button>
                         )
                     }

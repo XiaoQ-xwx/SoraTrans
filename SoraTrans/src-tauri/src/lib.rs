@@ -1,9 +1,14 @@
+pub mod ai;
 pub mod pojo;
 pub mod util;
+use ai::{client, service};
+use ai::service::AiRunSummary;
 use pojo::{
-    asset_info::AssetInfo, pattern_tree_info::PatternTreeInfo, project_info::ProjectInfo,
-    scan_info::ScanInfo, scan_status::ScanStatus, tag_info::TagInfo,
-    text_origin_info::TextOriginInfo, text_template_info::TextTemplateInfo,
+    ai_settings_info::AiSettingsInfo, asset_info::AssetInfo,
+    export_text_info::{ExportTextInfo, IdPairInfo, TextPairInfo},
+    pattern_tree_info::PatternTreeInfo, project_info::ProjectInfo, scan_info::ScanInfo,
+    scan_status::ScanStatus, tag_info::TagInfo, text_origin_info::TextOriginInfo,
+    text_template_info::TextTemplateInfo,
 };
 use std::path::Path;
 use serde::{Serialize};
@@ -11,7 +16,9 @@ use tauri::{Manager, State, WindowEvent, App, AppHandle, Emitter};
 use tauri_plugin_log::log;
 use util::{
     db_manager, get_app_info, get_scan_dir,
-    repo::{assets, assets_object, project, tag, text_origin, text_translate},
+    repo::{
+        ai_settings, app_settings, assets, assets_object, project, tag, text_origin, text_translate,
+    },
     run_app, save_icon, worker,
 };
 
@@ -231,8 +238,10 @@ async fn select_asset_object_list(
     id: i64,
     sort: Option<String>,
     types: Option<Vec<String>>,
+    localizable_only: Option<bool>,
 ) -> Result<Vec<AssetObjectInfo>, String> {
-    let list = assets_object::select_asset_object_list(&manager, id, sort, types).await?;
+    let list =
+        assets_object::select_asset_object_list(&manager, id, sort, types, localizable_only).await?;
     Ok(list)
 }
 
@@ -274,8 +283,11 @@ async fn search_asset_obj_by_name(
     val: String,
     sort: Option<String>,
     types: Option<Vec<String>>,
+    localizable_only: Option<bool>,
 ) -> Result<Vec<AssetObjectInfo>, String> {
-    let list = assets_object::search_asset_obj_by_name(&manager, id, val, sort, types).await?;
+    let list =
+        assets_object::search_asset_obj_by_name(&manager, id, val, sort, types, localizable_only)
+            .await?;
     Ok(list)
 }
 
@@ -406,6 +418,101 @@ fn spawn_asset_worker(app: &mut App) {
 
 
 
+// ==================== AI 语义识别 ====================
+
+#[tauri::command]
+async fn get_ai_settings(
+    manager: State<'_, db_manager::DbManager>,
+) -> Result<Option<AiSettingsInfo>, String> {
+    ai_settings::select_ai_settings(&manager).await
+}
+
+#[tauri::command]
+async fn save_ai_settings(
+    manager: State<'_, db_manager::DbManager>,
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<(), String> {
+    ai_settings::upsert_ai_settings(&manager, base_url, api_key, model).await
+}
+
+#[tauri::command]
+async fn test_ai_connection(
+    base_url: String,
+    api_key: String,
+    model: String,
+    provider: Option<String>,
+) -> Result<(), String> {
+    let config = client::AiConfig {
+        base_url,
+        api_key,
+        model,
+        provider: provider.unwrap_or_else(|| "llm".to_string()),
+    };
+    client::test_connection(&config).await
+}
+
+#[tauri::command]
+async fn run_ai_recognition(
+    app: AppHandle,
+    manager: State<'_, db_manager::DbManager>,
+    object_id: Option<i64>,
+) -> Result<AiRunSummary, String> {
+    service::run_recognition(&manager, &app, object_id).await
+}
+
+#[tauri::command]
+async fn cancel_ai_recognition() -> Result<(), String> {
+    service::cancel();
+    Ok(())
+}
+
+// ==================== 通用设置 ====================
+
+#[tauri::command]
+async fn get_app_setting(
+    manager: State<'_, db_manager::DbManager>,
+    key: String,
+) -> Result<Option<String>, String> {
+    app_settings::get_setting(&manager, key).await
+}
+
+#[tauri::command]
+async fn set_app_setting(
+    manager: State<'_, db_manager::DbManager>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    app_settings::set_setting(&manager, key, value).await
+}
+
+// ==================== 全库导出 / 译文导入 ====================
+
+#[tauri::command]
+async fn select_export_texts(
+    manager: State<'_, db_manager::DbManager>,
+    localizable_only: bool,
+) -> Result<Vec<ExportTextInfo>, String> {
+    text_origin::select_export_texts(&manager, localizable_only).await
+}
+
+#[tauri::command]
+async fn import_trans_by_text(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<TextPairInfo>,
+) -> Result<u64, String> {
+    text_origin::import_trans_by_text(&manager, &list).await
+}
+
+#[tauri::command]
+async fn import_trans_by_id(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<IdPairInfo>,
+) -> Result<u64, String> {
+    text_origin::import_trans_by_id(&manager, &list).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = db_manager::DbManager::new();
@@ -426,7 +533,9 @@ pub fn run() {
         .manage(manager)
         .manage(AssetWorkerProcess(Default::default()))
         .setup(move |app| {
-            // spawn_asset_worker(app);
+            // 启动时自动拉起 AssetWorker sidecar：
+            // 扫描/提取/查看/打补丁全部走它监听的本机 HTTP/SSE（默认 5089）
+            spawn_asset_worker(app);
 
             let manager = manager_for_setup.clone();
 
@@ -509,7 +618,17 @@ pub fn run() {
             insert_trans,
             insert_batch_trans,
             update_text_templates,
-            select_text_templates
+            select_text_templates,
+            get_ai_settings,
+            save_ai_settings,
+            test_ai_connection,
+            run_ai_recognition,
+            cancel_ai_recognition,
+            get_app_setting,
+            set_app_setting,
+            select_export_texts,
+            import_trans_by_text,
+            import_trans_by_id
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -4,6 +4,7 @@ import { info } from '@tauri-apps/plugin-log';
 import Database from '@tauri-apps/plugin-sql';
 import { invoke } from '@tauri-apps/api/core';
 import { ScanInfo } from '@/model/ScanInfo';
+import { AiSettings } from '@/model/AiSettings';
 
 class DbManager {
 
@@ -112,6 +113,40 @@ class DbManager {
             info(`游戏标签查询失败:${error}`);
             return []
         }
+    }
+
+    // ============ AI 识别设置（主库 ai_settings 单行表） ============
+
+    async getAiSettings(): Promise<AiSettings | null> {
+        try {
+            return await invoke<AiSettings | null>("get_ai_settings")
+        } catch (error) {
+            info(`查询 AI 设置失败:${error}`);
+            return null;
+        }
+    }
+
+    async saveAiSettings(baseUrl: string, apiKey: string, model: string): Promise<void> {
+        await invoke("save_ai_settings", { baseUrl: baseUrl, apiKey: apiKey, model: model })
+    }
+
+    async testAiConnection(baseUrl: string, apiKey: string, model: string, provider: string): Promise<void> {
+        await invoke("test_ai_connection", { baseUrl: baseUrl, apiKey: apiKey, model: model, provider: provider })
+    }
+
+    // ============ 通用设置（主库 app_settings 键值表） ============
+
+    async getAppSetting(key: string): Promise<string | null> {
+        try {
+            return await invoke<string | null>("get_app_setting", { key })
+        } catch (error) {
+            info(`查询设置失败(${key}):${error}`);
+            return null;
+        }
+    }
+
+    async setAppSetting(key: string, value: string): Promise<void> {
+        await invoke("set_app_setting", { key, value })
     }
 }
 

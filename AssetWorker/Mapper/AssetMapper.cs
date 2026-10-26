@@ -10,10 +10,19 @@ namespace AssetWorker.Mapper
         public void InsertAsset(string dbPath, Asset asset)
         {
             using var conn = _factory.Create(dbPath);
+            // 重新扫描语义：已登记过的文件把 status 重置为 0，
+            // 这样 ExtractAsync 的 "WHERE a.status != 2" 才会再次处理它。
+            // 若维持 DO NOTHING，已完成的项目重扫后资产全是 status=2，
+            // 提取列表为空，表现为"点了扫描毫无反应"。
             string sql = """
-                INSERT OR IGNORE INTO assets (name,size,path,parent_bundle_name)
+                INSERT INTO assets (name,size,path,parent_bundle_name)
                 VALUES (@Name,@Size,@Path,@ParentBundleName)
-                ON CONFLICT(path) DO NOTHING;
+                ON CONFLICT(path) DO UPDATE SET
+                    name = excluded.name,
+                    size = excluded.size,
+                    parent_bundle_name = excluded.parent_bundle_name,
+                    status = 0,
+                    update_time = DATETIME('now', 'localtime');
             """;
             conn.Execute(sql, asset);
         }

@@ -1,3 +1,5 @@
+pub mod ai_settings;
+pub mod app_settings;
 pub mod project;
 pub mod assets;
 pub mod tag;

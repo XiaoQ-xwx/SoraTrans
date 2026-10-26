@@ -21,3 +21,13 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+# 本地备份与测试数据（不纳入版本控制）
+backups/
+InklingHeroesVS_ver1.554_PC/
+%SystemDrive%/
+publish_out/
+
+# 编译产物：Tauri externalBin 由 AssetWorker 编译生成，不进版本库
+# 生成方式：powershell -ExecutionPolicy Bypass -File scripts/build-sidecar.ps1
+SoraTrans/src-tauri/binaries/*
+!SoraTrans/src-tauri/binaries/.gitkeep

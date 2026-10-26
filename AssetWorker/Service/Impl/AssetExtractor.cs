@@ -19,7 +19,10 @@ namespace AssetWorker.Service.Impl
         private readonly TextOriginMapper textOriginMapper = new();
         private readonly AssetObjectMapper assetObjectMapper = new();
         private const long LargeFileThreshold = 256 * 1024 * 1024;
-        private static readonly Regex FindRegex = new("[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff]");
+        // 提取不再有"语言档位"：一律收全部非空字符串，保证不遗漏。
+        // 噪声交给下游两条产线过滤（CSV 表按列直取，散落字段交给 AI 判 pattern）。
+        // 曾有四档（all/ja/en/ja+en），实测 en 档因为"整块文本含斜杠就当路径丢弃"
+        // 把 chara_0 这类剧本整块漏掉，档位概念本身也在放大误解，故移除。
 
         public IEnumerable<FileScanEvent> ExtractBundle(string dbPath, BundleFileInstance bunInst)
         {
@@ -167,7 +170,7 @@ namespace AssetWorker.Service.Impl
                         // 所有可能有文本的类型统一遍历检测日文：MonoBehaviour/TextAsset/
                         // GameObject/Material/ScriptableObject 等任意序列化类型都可能携带
                         // 文本（对象名、描述字段等），无文本对象遍历后 list 为空
-                        TraverseAndDetect(goBase, currentPath: "", onJapaneseFound: (keyPath, japaneseText) =>
+                        TraverseAndDetect(goBase, currentPath: "", onTextFound: (keyPath, japaneseText) =>
                         {
                             count++;
                             list.Add(new TextOrigin()
@@ -249,19 +252,24 @@ namespace AssetWorker.Service.Impl
         
         public record ExtractAssetEvent(string type, object val);
 
+        /// <summary>
+        /// 递归遍历字段树，把每个非空字符串原样回调出去。
+        /// 不做任何语言判断——提取求完整，筛噪声是下游的事
+        /// （CSV 表按列直取，散落字段交给 AI 按 pattern 判定）。
+        /// </summary>
         public static void TraverseAndDetect(
             AssetTypeValueField field,
             string currentPath,
-            Action<string, string> onJapaneseFound)
+            Action<string, string> onTextFound)
         {
             if (field == null) return;
 
             if (field.Value != null && field.Value.ValueType == AssetValueType.String)
             {
                 string strVal = field.AsString;
-                if (!string.IsNullOrEmpty(strVal) && ContainsJapanese(strVal))
+                if (!string.IsNullOrWhiteSpace(strVal))
                 {
-                    onJapaneseFound(currentPath, strVal);
+                    onTextFound(currentPath, strVal);
                 }
                 return;
             }
@@ -276,7 +284,7 @@ namespace AssetWorker.Service.Impl
                 {
                     var child = field.Children[i];
                     string childPath = $"{currentPath}[{i}]";
-                    TraverseAndDetect(child, childPath, onJapaneseFound);
+                    TraverseAndDetect(child, childPath, onTextFound);
                 }
             }
             else
@@ -287,7 +295,7 @@ namespace AssetWorker.Service.Impl
 
                     if (child.FieldName == "Array" && isArray)
                     {
-                        TraverseAndDetect(child, currentPath, onJapaneseFound);
+                        TraverseAndDetect(child, currentPath, onTextFound);
                         continue;
                     }
 
@@ -295,15 +303,9 @@ namespace AssetWorker.Service.Impl
                         ? child.FieldName
                         : $"{currentPath}.{child.FieldName}";
 
-                    TraverseAndDetect(child, childPath, onJapaneseFound);
+                    TraverseAndDetect(child, childPath, onTextFound);
                 }
             }
-        }
-
-        private static bool ContainsJapanese(string strVal)
-        {
-            if (string.IsNullOrWhiteSpace(strVal)) return false;
-            return FindRegex.IsMatch(strVal);
         }
 
         /// <summary>

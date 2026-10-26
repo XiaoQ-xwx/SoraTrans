@@ -1,7 +1,7 @@
 import AssetObjectInfo, { useAssetObjectStore } from "@/model/AssetObjectInfo";
 import { AssetObjSortMethod, gm } from "@/utils/GameDbManager";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDownIcon, FilterIcon, SearchIcon } from "lucide-react";
+import { ChevronDownIcon, FilterIcon, SearchIcon, SparklesIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MdArrowDownward, MdArrowUpward } from "react-icons/md";
 import SimpleBar from "simplebar-react";
@@ -29,8 +29,10 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
     const [isASC, setIsASC] = useState<boolean>()
     const [showFilter, setShowFilter] = useState(false)
     const [showAssetMenu, setShowAssetMenu] = useState(false)
-    // 列宽：名称 / 类型 / PathID / 大小 / 行数 / 修改
-    const [colWidths, setColWidths] = useState<number[]>([200, 70, 60, 50, 40, 30])
+    // 列宽：名称 / 类型 / PathID / 大小 / 行数 / 可本地 / 修改
+    const [colWidths, setColWidths] = useState<number[]>([200, 70, 60, 50, 40, 44, 30])
+    // 只看 AI 判定「有可本地化文本」的对象
+    const [localizableOnly, setLocalizableOnly] = useState(false)
     const [allTypes, setAllTypes] = useState<string[]>([])
     const [typeFilterReady, setTypeFilterReady] = useState(false)
     const currentSort = useAssetObjectStore((state)=> state.currentSort)
@@ -73,9 +75,9 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
         setCurrentSort(sort)
 
         if (search != "") {
-            await gm.searchAssetObjByName(id, search, sort, activeTypes)
+            await gm.searchAssetObjByName(id, search, sort, activeTypes, localizableOnly)
         } else {
-            await gm.selectAssetObjectList(id, sort, activeTypes)
+            await gm.selectAssetObjectList(id, sort, activeTypes, localizableOnly)
         }
     }
 
@@ -121,15 +123,15 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
 
     useEffect(() => {
         async function handleSearch(val: string) {
-            await gm.searchAssetObjByName(id, val, currentSort, activeTypes)
+            await gm.searchAssetObjByName(id, val, currentSort, activeTypes, localizableOnly)
         }
 
         if (search != "") {
             handleSearch(search)
         } else {
-            gm.selectAssetObjectList(id, currentSort, activeTypes)
+            gm.selectAssetObjectList(id, currentSort, activeTypes, localizableOnly)
         }
-    }, [search, typeFilter])
+    }, [search, typeFilter, localizableOnly])
 
     return (
         <div className="flex h-full min-w-0 flex-col ">
@@ -184,6 +186,14 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                     )
                 }
                 <div className="flex items-center gap-1">
+                    <button
+                        onClick={() => setLocalizableOnly(v => !v)}
+                        title="只看 AI 判定含可本地化文本的对象（需先运行 AI 识别）"
+                        className={`flex h-[20px] px-1.5 border rounded-sm items-center justify-center gap-1 text-[9px] transition-colors ${localizableOnly ? "bg-[#0067c0] text-white border-[#0067c0]" : "text-neutral-500 hover:bg-muted/50"}`}
+                    >
+                        <SparklesIcon className="size-2" />
+                        <span className="leading-none">可本地化</span>
+                    </button>
                     <div className="relative">
                         <button onClick={() => setShowFilter(!showFilter)} className="flex h-[20px] w-[20px] border rounded-sm items-center justify-center text-[10px] text-neutral-500 hover:bg-muted/50">
                             <FilterIcon className="size-2" />
@@ -247,10 +257,14 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                     {currentSort == AssetObjSortMethod.LineDown && (<MdArrowDownward className="shrink-0" />)}
                     <ColResizer idx={4} />
                 </div>
+                <div className="relative flex items-center select-none overflow-hidden">
+                    <span className="truncate" title="AI 判定可本地化的行数">可本地</span>
+                    <ColResizer idx={5} />
+                </div>
                 <div onClick={() => handleModSort(AssetObjSortMethod.ModDown)} className="relative flex items-center cursor-pointer select-none overflow-hidden">
                     <span className="truncate">修改</span>
                     {currentSort == AssetObjSortMethod.ModDown && (<MdArrowDownward className="shrink-0" />)}
-                    <ColResizer idx={5} />
+                    <ColResizer idx={6} />
                 </div>
             </div>
             {
@@ -281,6 +295,7 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                                                     <div className="font-mono select-none truncate">{row.path_id}</div>
                                                     <div className="font-mono select-none">{row.size}</div>
                                                     <div className="font-mono select-none">{row.line_count}</div>
+                                                    <div className={`font-mono select-none ${row.localizable_lines > 0 ? "text-emerald-600" : "text-neutral-300"}`}>{row.localizable_lines > 0 ? row.localizable_lines : "-"}</div>
                                                     <div className="font-mono select-none">{row.isMod ? "*" : ""}</div>
                                                 </div>
                                             );

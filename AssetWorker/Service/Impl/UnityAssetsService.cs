@@ -41,6 +41,8 @@ namespace AssetWorker.Service.Impl
             var env = _unityDetectService.DetectEnvInfo(initDTO.Path, initDTO.Title);
             session.Init(initDTO.DbPath);
             path = initDTO.Path;
+            // 提取语言档位已移除：永远全量提取，噪声交给下游两条产线
+            // （CSV 表按 ENG 列直取，散落字段交给 AI 按 pattern 判定）
             switch (env.Backend)
             {
                 case GameBackend.Mono:

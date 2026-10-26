@@ -2,7 +2,7 @@ import { MdMenu, MdTranslate } from "react-icons/md";
 import { SideItem, SideItemType } from "./SideItem";
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { LuGamepad2 } from "react-icons/lu";
+import { LuGamepad2, LuSettings } from "react-icons/lu";
 import { TbTextRecognition } from "react-icons/tb";
 
 export default function SideBar(setCurrentTab:{setCurrentTab:(tabId: number) => void}) {
@@ -30,7 +30,7 @@ export default function SideBar(setCurrentTab:{setCurrentTab:(tabId: number) => 
 
     const ItemBottomList: SideItemType[] = [
         // { ItemIcon: LuInfo, onClick: PageSwitchBtn, ItemName: "关于", id: 5 },
-        // { ItemIcon: LuSettings, onClick: PageSwitchBtn, ItemName: "设置", id: 6 },
+        { ItemIcon: LuSettings, onClick: PageSwitchBtn, ItemName: "设置", id: 6 },
     ]
 
     return (

@@ -1,4 +1,4 @@
-import { ChevronRightIcon, FileIcon, FolderIcon } from "lucide-react"
+import { CheckCircle2, ChevronRightIcon, FileIcon, FolderIcon, XCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createStore } from "zustand";
@@ -9,7 +9,13 @@ import { gm } from "@/utils/GameDbManager";
 import { useAssetObjectStore } from "@/model/AssetObjectInfo";
 import { useTextOriginStore } from "@/model/TextOrigin";
 
-export type FileTreeItem = { id: number, name: string, line: number } | { id: number, name: string, line: number; items: FileTreeItem[] }
+export type FileTreeItem = {
+    id: number, name: string, line: number,
+    /** AI 语义分类（仅 pattern 树叶子节点携带） */
+    aiLabel?: string | null,
+    /** AI 判定的可本地化标记：1 可 / 0 不可 / undefined 未识别 */
+    localizable?: number | null,
+} | { id: number, name: string, line: number, aiLabel?: string | null, localizable?: number | null; items: FileTreeItem[] }
 
 type FileTreeStoreState = { list: FileTreeItem[] }
 
@@ -77,7 +83,13 @@ const TreeRow = memo(function TreeRow({ row, expanded, onToggle, handleBtn, styl
                     depth > 0 && <ChevronRightIcon className="invisible" />
                 )}
                 {isFolder ? <FolderIcon /> : <FileIcon />}
-                <span className="text-xs truncate max-w-[80%] z-10 font-san">{item.name}</span>
+                <span className="text-xs truncate max-w-[55%] z-10 font-san">{item.name}</span>
+                {!isFolder && item.aiLabel && <span className="text-[9px] text-blue-600 truncate flex-1 z-10 font-san">{item.aiLabel}</span>}
+                {!isFolder && item.localizable != null && (
+                    item.localizable === 1
+                        ? <CheckCircle2 size={11} className="text-green-600 shrink-0 z-10" />
+                        : <XCircle size={11} className="text-neutral-300 shrink-0 z-10" />
+                )}
                 <span className="absolute font-mono right-1 z-20 text-[10px] px-[6px] text-transparent group-hover:text-gray-400 group-hover:bg-gray-200 group-hover:rounded-md">{item.line}</span>
             </Button>
         </div>
@@ -86,7 +98,7 @@ const TreeRow = memo(function TreeRow({ row, expanded, onToggle, handleBtn, styl
 
 type FileTreeType = "asset" | "pattern"
 
-export default function FileTree({ fileTree, type }: { fileTree: FileTreeItem[], type: FileTreeType }) {
+export default function FileTree({ fileTree, type, emptyTitle, emptyDesc }: { fileTree: FileTreeItem[], type: FileTreeType, emptyTitle?: string, emptyDesc?: string }) {
 
     const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
@@ -186,8 +198,8 @@ export default function FileTree({ fileTree, type }: { fileTree: FileTreeItem[],
                     </SimpleBar>
                 ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center">
-                        <p className="text-xs text-gray-400 select-none">空空如也...</p>
-                        <p className="text-xs text-gray-400 select-none">请先进行扫描</p>
+                        <p className="text-xs text-gray-400 select-none">{emptyTitle ?? "空空如也..."}</p>
+                        <p className="text-xs text-gray-400 select-none">{emptyDesc ?? "请先进行扫描"}</p>
                     </div>
                 )
             }

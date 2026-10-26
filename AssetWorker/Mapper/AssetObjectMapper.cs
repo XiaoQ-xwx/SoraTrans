@@ -42,9 +42,17 @@ namespace AssetWorker.Mapper
             // 只查/插库一次，后续直接命中缓存，避免对每条 text_origin 都走 SQL
             private readonly Dictionary<string, long> _patternCache = new();
 
+            // 冲突时更新行数/大小：重新扫描会重新提取，但 INSERT OR IGNORE 会让
+            // 已有对象永远保留首次提取时的 line_count（比如首次漏提取的剧本对象
+            // 一直显示 1 行）。DO UPDATE 保持 id 不变，前端引用的 id 不受影响。
             private const string InsertObjSql = """
-                INSERT OR IGNORE INTO assets_object (name,type,path_id,asset_id,size,line_count)
+                INSERT INTO assets_object (name,type,path_id,asset_id,size,line_count)
                 VALUES (@Name,@Type,@PathId,@AssetId,@Size,@LineCount)
+                ON CONFLICT(path_id, asset_id) DO UPDATE SET
+                    name = excluded.name,
+                    size = excluded.size,
+                    line_count = excluded.line_count,
+                    update_time = DATETIME('now', 'localtime')
             """;
             private const string LastIdSql = "SELECT last_insert_rowid();";
             // PathId 只在单个 SerializedFile 内唯一，跨 assets 文件会重复，

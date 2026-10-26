@@ -8,6 +8,8 @@ export default interface AssetObjectInfo {
     path_id: number,
     size: number,
     line_count: number,
+    // AI 判定为可本地化的文本行数（未识别时为 0）
+    localizable_lines: number,
     isMod: boolean
 }
 

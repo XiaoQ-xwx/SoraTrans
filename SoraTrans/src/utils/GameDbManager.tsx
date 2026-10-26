@@ -5,6 +5,7 @@ import { FileTreeItem, useFileTreeStore } from '@/components/FileTree';
 import AssetObjectInfo, { useAssetObjectStore } from '@/model/AssetObjectInfo';
 import { TextOrigin, useTextOriginStore } from '@/model/TextOrigin';
 import { invoke } from '@tauri-apps/api/core';
+import { AiRunSummary } from '@/model/AiSettings';
 
 enum AssetObjSortMethod {
     NameUp = "ORDER BY name ASC",
@@ -104,15 +105,15 @@ class GameDbManager {
         }
     }
 
-    async selectAssetObjectList(id: number, sort?: AssetObjSortMethod | null, types?: string[]): Promise<void> {
+    async selectAssetObjectList(id: number, sort?: AssetObjSortMethod | null, types?: string[], localizableOnly?: boolean): Promise<void> {
         try {
             if (sort == AssetObjSortMethod.ModDown) {
                 // ModDown 是前端本地排序，先查出数据再按修改状态排序
-                const res = await invoke<AssetObjectInfo[]>("select_asset_object_list",{id:id,sort:null,types})
+                const res = await invoke<AssetObjectInfo[]>("select_asset_object_list",{id:id,sort:null,types,localizableOnly})
                 useAssetObjectStore.getState().setAssetObjList(res);
                 useAssetObjectStore.getState().sortListByMod()
             } else {
-                const res = await invoke<AssetObjectInfo[]>("select_asset_object_list",{id:id,sort:sort,types})
+                const res = await invoke<AssetObjectInfo[]>("select_asset_object_list",{id:id,sort:sort,types,localizableOnly})
                 useAssetObjectStore.getState().setAssetObjList(res);
             }
 
@@ -123,9 +124,12 @@ class GameDbManager {
 
     async selectPatternTree(id: number) {
         try {
-            const resList = await invoke<{ id: number, semantic: string, count: number }[]>("select_pattern_tree",{id:id})
+            const resList = await invoke<{ id: number, semantic: string, count: number, ai_label: string | null, localizable: number | null }[]>("select_pattern_tree",{id:id})
+            // "仅显示可本地化"：只保留 AI 判定可本地化（localizable === 1）的分组
+            const localizableOnly = useTextOriginStore.getState().localizableOnly
+            const visibleList = localizableOnly ? resList.filter(res => res.localizable === 1) : resList
             const rootMap = new Map<string, FileTreeItem>();
-            for (let res of resList) {
+            for (let res of visibleList) {
                 let parts = res.semantic.split(".");
                 this.insertTreeNode(rootMap, parts, res)
             }
@@ -162,6 +166,8 @@ class GameDbManager {
             id: number;
             semantic: string;
             count: number;
+            ai_label: string | null;
+            localizable: number | null;
         },
         depth = 0,
         isLast = false
@@ -200,6 +206,8 @@ class GameDbManager {
 
         if (depth === parts.length - 1) {
             node.id = res.id;
+            node.aiLabel = res.ai_label;
+            node.localizable = res.localizable;
             return;
         }
 
@@ -223,11 +231,11 @@ class GameDbManager {
         newNode.items = Array.from(childMap.values());
     }
 
-    async searchAssetObjByName(id: number, val: string, sort?: AssetObjSortMethod | null, types?: string[]): Promise<void> {
+    async searchAssetObjByName(id: number, val: string, sort?: AssetObjSortMethod | null, types?: string[], localizableOnly?: boolean): Promise<void> {
         try {
             // ModDown 是前端本地排序，后端不识别，用 null 查询后再本地排序
             const querySort = sort == AssetObjSortMethod.ModDown ? null : sort
-            const res = await invoke<AssetObjectInfo[]>("search_asset_obj_by_name",{id:id,val:val,sort:querySort,types})
+            const res = await invoke<AssetObjectInfo[]>("search_asset_obj_by_name",{id:id,val:val,sort:querySort,types,localizableOnly})
 
             useAssetObjectStore.getState().setAssetObjList(res);
             if (sort == AssetObjSortMethod.ModDown) {
@@ -293,6 +301,34 @@ class GameDbManager {
             { ids }
         );
         return new Map(res.map(item => [item.id, item.text_template]));
+    }
+
+    // ============ AI 语义识别 ============
+
+    // 对指定对象执行 AI 识别（objectId 传 null 时识别当前游戏全库）
+    async runAiRecognition(objectId: number | null): Promise<AiRunSummary> {
+        return await invoke<AiRunSummary>("run_ai_recognition", { objectId: objectId })
+    }
+
+    async cancelAiRecognition(): Promise<void> {
+        await invoke("cancel_ai_recognition")
+    }
+
+    // ============ 全库导出 / 译文导入 ============
+
+    // localizableOnly=true 时只返回 AI 判定可本地化的文本行
+    async selectExportTexts(localizableOnly: boolean): Promise<{ id: number, origin_text: string, trans_text: string | null, text_template: string | null, asset_name: string | null }[]> {
+        return await invoke("select_export_texts", { localizableOnly: localizableOnly })
+    }
+
+    // 以原文为键回写译文（LinguaGacha KV-JSON），返回写入行数
+    async importTransByText(list: { origin_text: string, trans_text: string }[]): Promise<number> {
+        return await invoke<number>("import_trans_by_text", { list })
+    }
+
+    // 以 id 为键回写译文（自有 CSV），返回写入行数
+    async importTransById(list: { id: number, trans_text: string }[]): Promise<number> {
+        return await invoke<number>("import_trans_by_id", { list })
     }
 }
 

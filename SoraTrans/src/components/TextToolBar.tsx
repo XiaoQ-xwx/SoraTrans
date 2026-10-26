@@ -1,14 +1,21 @@
 import { useTextOriginStore } from "@/model/TextOrigin"
+import { useAssetObjectStore } from "@/model/AssetObjectInfo";
 import { gm } from "@/utils/GameDbManager";
-import { CheckCircle2, DownloadIcon, Edit, FolderOpen, Loader2, UploadIcon, XCircle } from "lucide-react"
-import { ReactNode, useRef, useState } from "react"
+import { AiProgress, AiRunSummary } from "@/model/AiSettings";
+import { Ban, CheckCircle2, DownloadIcon, Edit, FolderOpen, Layers, Loader2, Sparkles, UploadIcon, XCircle } from "lucide-react"
+import { ReactNode, useEffect, useRef, useState } from "react"
+import { Checkbox } from "@/components/ui/checkbox";
+import { listen } from '@tauri-apps/api/event';
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { invoke } from "@tauri-apps/api/core";
 import {
-    extractTextTemplate,
+    extractTemplateAuto,
     LONG_TEXT_THRESHOLD,
+    DEFAULT_COLUMN_MODE,
+    type CsvColumnMode,
 } from "@/utils/TextTemplate";
+
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
@@ -72,15 +79,16 @@ export default function TextToolBar() {
 
         try {
             // CSV 每行一个条目：键,文本，首行固定表头 Key,Value
-            // 普通文本键为 id；超长文本拆成 id:{0}、id:{1} ... 每行一个日文片段，
-            // 同时把日文换成占位符的模板回写到 text_origin.text_template
+            // 普通文本键为 id；超长文本拆成 id:{0}、id:{1} ... 每行一个片段，
+            // 同时把片段换成占位符的模板回写到 text_origin.text_template
             const lines: string[] = ["Key,Value"];
             const templateUpdates: { id: number, text_template: string }[] = [];
+            // 与「一键导出」共用同一个固定口径（日文列 + 英文列一起导）
+            const columnMode: CsvColumnMode = DEFAULT_COLUMN_MODE;
 
             for (const text of list) {
                 if (text.origin_text.length > LONG_TEXT_THRESHOLD) {
-                    // 语言暂时写死日语，后续接用户选择
-                    const { template, placeholders } = extractTextTemplate(text.origin_text, "ja");
+                    const { template, placeholders } = extractTemplateAuto(text.origin_text, "ja", columnMode);
                     if (Object.keys(placeholders).length > 0) {
                         for (const [token, content] of Object.entries(placeholders)) {
                             lines.push(`${csvEscape(`${text.id}:${token}`)},${csvEscape(content)}`);
@@ -142,7 +150,8 @@ export default function TextToolBar() {
 
             // CSV 键格式：普通文本 "id,译文"；长文本 "id:{0},译文片段"，
             // 按 id 分组后用模板重组完整译文
-            const LONG_KEY_PATTERN = /^(\d+):(\{\d+\})$/;
+            // both 口径的键形如 123:{e0}（英文列）/ 123:{j1}（日文列），单列是 123:{0}
+            const LONG_KEY_PATTERN = /^(\d+):(\{[ej]?\d+\})$/;
             const normalMap = new Map<number, string>();
             const longParts = new Map<number, Record<string, string>>();
 
@@ -162,7 +171,7 @@ export default function TextToolBar() {
             const templateMap = await gm.selectTextTemplates([...longParts.keys()]);
 
             // 模板中的 {0}/{1} 占位符
-            const TOKEN_PATTERN = /\{\d+\}/g;
+            const TOKEN_PATTERN = /\{[ej]?\d+\}/g;
 
             const newList = list.map(item => {
                 // 普通文本：译文直接入库
@@ -196,6 +205,69 @@ export default function TextToolBar() {
             console.log(`err: ${error}`)
         }
 
+    }
+
+    // ============ AI 识别 ============
+    const [aiRunning, setAiRunning] = useState(false)
+    const [aiCancelling, setAiCancelling] = useState(false)
+    const [aiDone, setAiDone] = useState(0)
+    const [aiTotal, setAiTotal] = useState(0)
+    const [aiSummary, setAiSummary] = useState<AiRunSummary | null>(null)
+    const [aiError, setAiError] = useState("")
+    // 同步守卫：state 更新是异步的，同一帧内重复点击会穿透（与导出功能的 exportingRef 一致）
+    const aiRunningRef = useRef(false)
+    const localizableOnly = useTextOriginStore((state) => state.localizableOnly)
+    const setLocalizableOnly = useTextOriginStore((state) => state.setLocalizableOnly)
+
+    // 识别进度由 Rust 侧事件推送；结束态（finished）由返回值汇总呈现
+    useEffect(() => {
+        const un = listen<AiProgress>("ai-recognition-progress", (event) => {
+            const p = event.payload
+            if (p.finished) return
+            setAiDone(p.done)
+            setAiTotal(p.total)
+        })
+        return () => { un.then(fn => fn()) }
+    }, [])
+
+    // objectId 传 null 表示识别全库分组
+    const runAi = async (objectId: number | null) => {
+        if (aiRunningRef.current) return
+        aiRunningRef.current = true
+        setAiError("")
+        setAiSummary(null)
+        setAiCancelling(false)
+        setAiRunning(true)
+        try {
+            const summary = await gm.runAiRecognition(objectId)
+            setAiSummary(summary)
+            if (summary.lastError) setAiError(`部分分组识别失败：${summary.lastError}`)
+        } catch (e) {
+            setAiError(String(e))
+        } finally {
+            aiRunningRef.current = false
+            setAiRunning(false)
+            setAiCancelling(false)
+        }
+    }
+
+    const handleAiBtn = () => {
+        const objId = useAssetObjectStore.getState().id
+        if (!objId) {
+            setAiError("尚未选择资源对象")
+            return
+        }
+        runAi(objId)
+    }
+
+    const handleAiAllBtn = () => {
+        runAi(null)
+    }
+
+    const handleCancelAi = async () => {
+        // 取消只置位标志：后端会在 200ms 内丢弃在途请求并收尾
+        setAiCancelling(true)
+        try { await gm.cancelAiRecognition() } catch { setAiCancelling(false) }
     }
 
     //TODO: 打开编辑器编辑
@@ -235,6 +307,57 @@ export default function TextToolBar() {
                 <div className="grid gap-1 md:grid-cols-2 overflow-hidden">
                     <ToolBtn onClick={handleImportBtn} icon={<UploadIcon size={10} className="text-neutral-500" />} text="导入所有译文" />
                     <ToolBtn onClick={handleExportBtn} icon={<DownloadIcon size={10} className="text-neutral-500" />} text="导出所有原文" />
+                </div>
+            </div>
+            <div className="w-full flex flex-col gap-2">
+                <ToolTitle title="AI 识别" />
+                <div className="grid gap-1 md:grid-cols-2 overflow-hidden">
+                    <ToolBtn
+                        onClick={handleAiBtn}
+                        title="识别当前资源对象涉及的文本分组"
+                        icon={aiRunning
+                            ? <Loader2 size={10} className="animate-spin text-neutral-500" />
+                            : <Sparkles size={10} className="text-neutral-500" />}
+                        text={aiRunning
+                            ? (aiCancelling ? "取消中..." : "识别中...")
+                            : "AI 识别"}
+                    />
+                    {aiRunning
+                        ? <ToolBtn
+                            onClick={handleCancelAi}
+                            title="丢弃在途请求并停止后续批次"
+                            icon={<Ban size={10} className="text-neutral-500" />}
+                            text="取消"
+                        />
+                        : <ToolBtn
+                            onClick={handleAiAllBtn}
+                            title="识别当前游戏的全部分组"
+                            icon={<Layers size={10} className="text-neutral-500" />}
+                            text="识别全部"
+                        />}
+                </div>
+                <p className="text-[10px] text-neutral-400 select-none leading-relaxed">
+                    标注按结构分组（Pattern）保存，同结构分组在各对象间共享。
+                </p>
+                {aiRunning && (
+                    <p className="text-[10px] text-neutral-400 select-none leading-none">已识别 {aiDone}/{aiTotal} 组</p>
+                )}
+                {!aiRunning && aiSummary && (
+                    <p className="text-[10px] text-neutral-400 select-none leading-relaxed">
+                        已标注 {aiSummary.updated}/{aiSummary.totalPatterns} 组
+                        {aiSummary.cancelled ? "（已取消）" : ""}
+                        {aiSummary.failedBatches > 0 ? `，${aiSummary.failedBatches} 批失败` : ""}
+                    </p>
+                )}
+                {aiError && <p className="text-[10px] text-red-500 break-all leading-relaxed">{aiError}</p>}
+                <div className="flex items-center gap-1.5 py-0.5">
+                    <Checkbox
+                        id="ai-localizable-only"
+                        checked={localizableOnly}
+                        onCheckedChange={(v) => setLocalizableOnly(v === true)}
+                        className="size-3"
+                    />
+                    <label htmlFor="ai-localizable-only" className="text-[10px] text-neutral-500 select-none cursor-pointer">仅显示可本地化</label>
                 </div>
             </div>
             <ExportDialog
@@ -356,12 +479,12 @@ function ExportDialog({ open, phase, errorMsg, filePath, onOpenChange }: {
 }
 
 // CSV 字段转义：含逗号/引号/换行时用双引号包裹，内部引号双写
-function csvEscape(s: string): string {
+export function csvEscape(s: string): string {
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 // 解析 CSV 为 [键, 值] 行，支持引号包裹的多行字段与 "" 转义引号
-function parseCsvRows(text: string): [string, string][] {
+export function parseCsvRows(text: string): [string, string][] {
     const rows: [string, string][] = [];
     let field = "";
     let row: string[] = [];
@@ -410,10 +533,10 @@ function ToolTitle({ title }: { title: string }) {
     )
 }
 
-export function ToolBtn({ icon, text, onClick }: { icon: ReactNode, text: string, onClick?: () => void }) {
+export function ToolBtn({ icon, text, onClick, title }: { icon: ReactNode, text: string, onClick?: () => void, title?: string }) {
 
     return (
-        <div onClick={onClick} className="flex cursor-pointer hover:bg-muted/50 hover:border-gray-400 items-center px-1 h-6 justify-center gap-1 border rounded-sm">
+        <div onClick={onClick} title={title} className="flex cursor-pointer hover:bg-muted/50 hover:border-gray-400 items-center px-1 h-6 justify-center gap-1 border rounded-sm">
             {icon}
             <span className="text-[10px] truncate leading-none select-none">{text}</span>
         </div>

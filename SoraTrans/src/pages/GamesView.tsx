@@ -40,6 +40,7 @@ export default function GamesView({ id, dbPath }: { id: number | null, dbPath: s
                 const res: VndbRes = await response.json() as VndbRes;
                 await manager.completeProjctInfo(id, dbPath, res);
                 if (!isInit) {
+                    // 提取不再有语言档位：一律全量提取
                     await assetApi.init({ Path: info?.root_path, DbPath: dbPath, Title: info?.title });
                     useInitStore.getState().setIsInit(true)
                 }

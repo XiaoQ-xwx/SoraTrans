@@ -26,11 +26,28 @@ pub async fn select_distinct_types(
     Ok(result)
 }
 
+/// 对象列表 + AI 可本地化行数。
+/// 用一次聚合子查询 LEFT JOIN，避免对 13 万对象逐行做相关子查询。
+const OBJECT_LIST_BASE: &str = r#"
+    SELECT assets_object.id, assets_object.name, assets_object.type, assets_object.path_id,
+           assets_object.size, assets_object.line_count,
+           COALESCE(agg.cnt, 0) AS localizable_lines
+    FROM assets_object
+    LEFT JOIN (
+        SELECT t.object_id AS oid, COUNT(*) AS cnt
+        FROM text_origin AS t
+        JOIN text_pattern AS p ON p.id = t.pattern_id
+        WHERE p.localizable = 1
+        GROUP BY t.object_id
+    ) AS agg ON agg.oid = assets_object.id
+"#;
+
 pub async fn select_asset_object_list(
     manager: &DbManager,
     id: i64,
     sort: Option<String>,
     types: Option<Vec<String>>,
+    localizable_only: Option<bool>,
 ) -> Result<Vec<AssetObjectInfo>, String> {
     let db = manager.game_db().await?;
     let mut conn = db.acquire().await.map_err(|e| e.to_string())?;
@@ -52,16 +69,26 @@ pub async fn select_asset_object_list(
         "AND asset_id = ?".to_string()
     };
 
+    // 只看"有可本地化文本"的对象（AI 识别后才有效；未识别时结果为空）
+    let ai_clause = if localizable_only.unwrap_or(false) {
+        "AND agg.cnt > 0"
+    } else {
+        ""
+    };
+
     let sql = format!(
         r#"
-            SELECT * FROM assets_object
+            {}
             WHERE 1=1
             {}
             {}
             {}
+            {}
         "#,
+        OBJECT_LIST_BASE,
         asset_clause,
         type_clause,
+        ai_clause,
         sort.unwrap_or_default()
     );
 
@@ -88,6 +115,7 @@ pub async fn search_asset_obj_by_name(
     val: String,
     sort: Option<String>,
     types: Option<Vec<String>>,
+    localizable_only: Option<bool>,
 ) -> Result<Vec<AssetObjectInfo>, String> {
     let db = manager.game_db().await?;
     let mut conn = db.acquire().await.map_err(|e| e.to_string())?;
@@ -108,10 +136,15 @@ pub async fn search_asset_obj_by_name(
         "AND assets_object.asset_id = ?".to_string()
     };
 
+    let ai_clause = if localizable_only.unwrap_or(false) {
+        "AND agg.cnt > 0"
+    } else {
+        ""
+    };
+
     let sql = format!(
         r#"
-            SELECT assets_object.*
-            FROM assets_object
+            {}
             WHERE 1=1
             {}
             AND (
@@ -124,12 +157,15 @@ pub async fn search_asset_obj_by_name(
                 )
             )
             {}
+            {}
             {};  
         "#,
+        OBJECT_LIST_BASE,
         asset_clause,
         val,
         val,
         type_clause,
+        ai_clause,
         sort.unwrap_or_default()
     );
 
