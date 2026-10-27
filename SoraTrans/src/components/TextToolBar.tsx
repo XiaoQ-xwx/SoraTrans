@@ -1,6 +1,7 @@
 import { useTextOriginStore } from "@/model/TextOrigin"
 import { useAssetObjectStore } from "@/model/AssetObjectInfo";
 import { gm } from "@/utils/GameDbManager";
+import { manager } from "@/utils/DbManager";
 import { AiProgress, AiRunSummary } from "@/model/AiSettings";
 import { Ban, CheckCircle2, DownloadIcon, Edit, FolderOpen, Layers, Loader2, Sparkles, UploadIcon, XCircle } from "lucide-react"
 import { ReactNode, useEffect, useRef, useState } from "react"
@@ -53,14 +54,17 @@ export default function TextToolBar() {
         const title = useTextOriginStore.getState().title
         const initTitle = useTextOriginStore.getState().initTitle
         const isSubTitle = initTitle != title
+        // 与「一键导出」共用设置页里的导出格式，避免同一个设置对两个入口行为不一致
+        const format = ((await manager.getAppSetting("export_format")) ?? "kvjson") as "kvjson" | "csv"
+        const isJson = format === "kvjson"
+        const ext = isJson ? "json" : "csv"
         const filePath = await save({
             title: "导出翻译文件",
-            defaultPath: isSubTitle ? `${initTitle}_${title}.csv` : `${title}.csv`,
+            defaultPath: isSubTitle ? `${initTitle}_${title}.${ext}` : `${title}.${ext}`,
             filters: [
-                {
-                    name: "CSV",
-                    extensions: ["csv"],
-                },
+                isJson
+                    ? { name: "JSON", extensions: ["json"] }
+                    : { name: "CSV", extensions: ["csv"] },
             ],
         });
 
@@ -78,10 +82,9 @@ export default function TextToolBar() {
         );
 
         try {
-            // CSV 每行一个条目：键,文本，首行固定表头 Key,Value
-            // 普通文本键为 id；超长文本拆成 id:{0}、id:{1} ... 每行一个片段，
+            // 条目键格式：普通文本是 id；超长文本拆成 id:{0}、id:{1} … 每个片段一条，
             // 同时把片段换成占位符的模板回写到 text_origin.text_template
-            const lines: string[] = ["Key,Value"];
+            const entries: [string, string][] = [];
             const templateUpdates: { id: number, text_template: string }[] = [];
             // 与「一键导出」共用同一个固定口径（日文列 + 英文列一起导）
             const columnMode: CsvColumnMode = DEFAULT_COLUMN_MODE;
@@ -91,16 +94,23 @@ export default function TextToolBar() {
                     const { template, placeholders } = extractTemplateAuto(text.origin_text, "ja", columnMode);
                     if (Object.keys(placeholders).length > 0) {
                         for (const [token, content] of Object.entries(placeholders)) {
-                            lines.push(`${csvEscape(`${text.id}:${token}`)},${csvEscape(content)}`);
+                            entries.push([`${text.id}:${token}`, content]);
                         }
                         templateUpdates.push({ id: text.id, text_template: template });
                         continue;
                     }
                 }
-                lines.push(`${text.id},${csvEscape(text.origin_text)}`);
+                entries.push([`${text.id}`, text.origin_text]);
             }
 
-            await writeTextFile(filePath, lines.join("\n"));
+            if (isJson) {
+                const obj: Record<string, string> = {};
+                for (const [key, value] of entries) obj[key] = value;
+                await writeTextFile(filePath, JSON.stringify(obj, null, 2));
+            } else {
+                const lines = ["Key,Value", ...entries.map(([key, value]) => `${csvEscape(key)},${csvEscape(value)}`)];
+                await writeTextFile(filePath, lines.join("\n"));
+            }
 
             if (templateUpdates.length > 0) {
                 await gm.updateTextTemplates(templateUpdates);
@@ -127,12 +137,9 @@ export default function TextToolBar() {
         const file = await open({
             multiple: false,
             directory: false,
-            title: "选择翻译 CSV 文件",
+            title: "选择译文文件（JSON / CSV）",
             filters: [
-                {
-                    name: "CSV",
-                    extensions: ["csv"],
-                },
+                { name: "译文文件", extensions: ["json", "csv"] },
             ],
         });
 
@@ -141,11 +148,18 @@ export default function TextToolBar() {
         try {
             const list = useTextOriginStore.getState().list
             const text = await readTextFile(file);
-            const rows = parseCsvRows(text);
-
-            // 跳过首行表头 Key,Value
-            if (rows.length > 0 && rows[0][0] === "Key" && rows[0][1] === "Value") {
-                rows.shift();
+            // 与导出格式对应：JSON 是 {键: 译文} 的扁平对象，CSV 是「Key,Value」两列
+            const isJson = file.toLowerCase().endsWith(".json")
+            let rows: [string, string][]
+            if (isJson) {
+                const parsed = JSON.parse(text) as Record<string, unknown>
+                rows = Object.entries(parsed).filter(([, v]) => typeof v === "string") as [string, string][]
+            } else {
+                rows = parseCsvRows(text)
+                // 跳过首行表头 Key,Value
+                if (rows.length > 0 && rows[0][0] === "Key" && rows[0][1] === "Value") {
+                    rows.shift()
+                }
             }
 
             // CSV 键格式：普通文本 "id,译文"；长文本 "id:{0},译文片段"，

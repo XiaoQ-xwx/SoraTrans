@@ -255,14 +255,14 @@ export default function SettingsView() {
                     <span className="text-sm font-semibold">导出格式</span>
                 </div>
                 <p className="text-[10px] text-neutral-400 leading-relaxed select-none">
-                    「一键导出」生成的文件格式。翻译结束后用「导入译文」读回同格式的文件即可。
+                    导出文件的格式。「一键导出」与「查看文本」里的导出都遵循此项；翻译结束后用对应的导入按钮读回同格式的文件。
                 </p>
                 <label className="flex items-start gap-2 cursor-pointer select-none">
                     <input type="radio" name="export-format" className="mt-[3px]"
                         checked={exportFormat === "kvjson"}
                         onChange={() => handleFormatChange("kvjson")} />
                     <span className="flex flex-col">
-                        <span className="text-xs">LinguaGacha KV-JSON（推荐）</span>
+                        <span className="text-xs">KV-JSON</span>
                         <span className="text-[10px] text-neutral-400 leading-relaxed">
                             原文作键的 JSON，可直接拖进 LinguaGacha；相同原文自动去重，术语更统一，导入时按原文匹配回写。
                         </span>
@@ -296,7 +296,7 @@ export default function SettingsView() {
                     <span className="flex flex-col">
                         <span className="text-xs">单个文件</span>
                         <span className="text-[10px] text-neutral-400 leading-relaxed">
-                            全部文本汇总成一个 JSON / CSV，方便整体交给翻译工具。
+                            全部文本汇总成一个 JSON / CSV。
                         </span>
                     </span>
                 </label>
@@ -305,7 +305,7 @@ export default function SettingsView() {
                         checked={granularity === "per_asset"}
                         onChange={() => handleGranularityChange("per_asset")} />
                     <span className="flex flex-col">
-                        <span className="text-xs">按资源文件拆分（推荐）</span>
+                        <span className="text-xs">按资源文件拆分</span>
                         <span className="text-[10px] text-neutral-400 leading-relaxed">
                             选一个目录，每个资源文件（如 UI、chara_0、iteminformation）单独一个文件，导出后可直接按文件对照/替换。
                         </span>
