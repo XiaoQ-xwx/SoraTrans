@@ -10,6 +10,9 @@ export default interface AssetObjectInfo {
     line_count: number,
     // AI 判定为可本地化的文本行数（未识别时为 0）
     localizable_lines: number,
+    // 后端统计：该对象已有非空译文或纹理补丁（0/1），重开应用后仍有效
+    is_mod: number,
+    // 渲染用标记：后端已有改动，或本次会话内刚改过
     isMod: boolean
 }
 
@@ -47,11 +50,11 @@ export const useAssetObjectStore = create<AssetObjectState>((set) => ({
     setAssetName: (val) => set({ assetName: val }),
     setAssetObjList: (val) =>
         set((state) => ({
-            assetObjList: val.map((item) =>
-                state.modifiedIds.has(item.id)
-                    ? { ...item, isMod: true }
-                    : { ...item, isMod: false }
-            ),
+            assetObjList: val.map((item) => ({
+                ...item,
+                // 优先用后端统计出的"已有改动"，再叠加本次会话内刚改过的对象
+                isMod: item.is_mod > 0 || state.modifiedIds.has(item.id),
+            })),
         })),
     setCurrentSort: (val) => set({ currentSort: val }),
     setTypeFilter: (val) => set({ typeFilter: val }),

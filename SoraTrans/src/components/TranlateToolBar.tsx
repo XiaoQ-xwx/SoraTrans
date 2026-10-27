@@ -356,24 +356,28 @@ export default function TranslateToolBar() {
     const handleImportAll = async () => {
         if (batchBusy) return
         const picked = await open({
-            title: "选择译文文件（LinguaGacha 输出的 JSON / SoraTrans 的 CSV）",
-            multiple: false,
+            title: "选择译文文件（可多选；LinguaGacha 输出的 JSON / SoraTrans 的 CSV）",
+            multiple: true,
             filters: [{ name: "译文文件", extensions: ["json", "csv"] }],
         })
-        if (!picked || Array.isArray(picked)) return
+        if (!picked) return
+        const paths = Array.isArray(picked) ? picked : [picked]
+        if (paths.length === 0) return
 
         setBatchBusy(true)
         setBatchMsg(null)
         try {
-            const path = picked as string
-            const text = await readTextFile(path)
             let written = 0
             // 口径固定，导出与导入必然一致，不存在"改设置导致 {n} 错位"的问题
             const columnMode: CsvColumnMode = DEFAULT_COLUMN_MODE
 
-            // 全量行（含模板）：长文本需要按模板把片段译文拼回整条
+            // 全量行只在开始时读一次：多选几十个文件时，不能每个文件都重新拉一遍库
             const allRows = await gm.selectExportTexts(false) as ExportRow[]
             const rowById = new Map(allRows.map(r => [r.id, r]))
+            // 有模板的长文本只是一小批，占位符也预先算好，供每个文件复用
+            const templateRows = allRows
+                .filter(r => !!r.text_template)
+                .map(r => ({ row: r, placeholders: extractTemplateAuto(r.origin_text, "ja", columnMode).placeholders }))
 
             const byText: { origin_text: string, trans_text: string }[] = []
             const byId: { id: number, trans_text: string }[] = []
@@ -381,6 +385,9 @@ export default function TranslateToolBar() {
             let skipped = 0
             // 译文丢失变量标记的片段数（保留原文片段，不写坏数据）
             let varMismatch = 0
+
+            for (const path of paths) {
+            const text = await readTextFile(path)
 
             if (path.toLowerCase().endsWith(".json")) {
                 const data = JSON.parse(text)
@@ -401,11 +408,9 @@ export default function TranslateToolBar() {
                 }
 
                 const done = new Set<number>()
-                // 先按模板拼回长文本
-                for (const r of allRows) {
-                    const tpl = r.text_template
-                    if (!tpl) continue
-                    const { placeholders } = extractTemplateAuto(r.origin_text, "ja", columnMode)
+                // 先按模板拼回长文本（占位符已在循环外预计算，这里直接复用）
+                for (const { row: r, placeholders } of templateRows) {
+                    const tpl = r.text_template as string
                     let assembled = tpl
                     let changed = false
                     for (const [tok, frag] of Object.entries(placeholders)) {
@@ -481,13 +486,14 @@ export default function TranslateToolBar() {
                     byId.push({ id, trans_text: v })
                 }
             }
+            }
 
             if (byText.length > 0) written += await gm.importTransByText(byText)
             if (byId.length > 0) written += await gm.importTransById(byId)
 
             setBatchMsg({
                 kind: skipped > 0 || varMismatch > 0 ? "err" : "ok",
-                text: `已导入译文，写入 ${written} 行`
+                text: `已导入 ${paths.length} 个文件的译文，写入 ${written} 行`
                     + (skipped > 0 ? `；${skipped} 条因长文本片段缺译被跳过（未写入，避免破坏原表）` : "")
                     + (varMismatch > 0 ? `；${varMismatch} 个片段译文丢了变量标记，已保留原文` : ""),
             })
