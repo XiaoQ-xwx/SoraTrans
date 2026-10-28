@@ -412,31 +412,38 @@ export default function TranslateToolBar() {
                 for (const { row: r, placeholders } of templateRows) {
                     const tpl = r.text_template as string
                     let assembled = tpl
-                    let changed = false
+                    // translatedAny 表示这条里真的被翻译过至少一个片段；
+                    // 缺译的片段一律用原文填回去，保证表格结构完整（否则整条会被丢弃）
+                    let translatedAny = false
                     for (const [tok, frag] of Object.entries(placeholders)) {
                         const tr = fragMap.get(frag)
-                        if (!tr || !tr.trim()) continue
-                        if (!sameVarTokens(frag, tr)) {
-                            varMismatch++
-                            continue
+                        const use = (tr && tr.trim()) ? tr : frag
+                        if (use !== frag) {
+                            if (!sameVarTokens(frag, use)) {
+                                varMismatch++
+                                assembled = assembled.split(tok).join(frag)
+                                continue
+                            }
+                            translatedAny = true
                         }
-                        assembled = assembled.split(tok).join(tr)
-                        changed = true
+                        assembled = assembled.split(tok).join(use)
                     }
-                    if (changed) {
-                        if (/\{[ej]?\d+\}/.test(assembled)) {
-                            skipped++
-                            continue
-                        }
-                        byId.push({ id: r.id, trans_text: assembled })
-                        done.add(r.id)
+                    if (!translatedAny) continue
+                    if (/\{[ej]?\d+\}/.test(assembled)) {
+                        skipped++
+                        continue
                     }
+                    byId.push({ id: r.id, trans_text: assembled })
+                    done.add(r.id)
                 }
-                // 其余按原文整条匹配
+                // 其余按原文整条匹配。译文等于原文说明没翻译过，
+                // 写进去只会把大量未翻译对象记成"已修改"，直接跳过
                 for (const r of allRows) {
                     if (done.has(r.id)) continue
                     const tr = fragMap.get(r.origin_text)
-                    if (tr && tr.trim()) byText.push({ origin_text: r.origin_text, trans_text: tr })
+                    if (tr && tr.trim() && tr !== r.origin_text) {
+                        byText.push({ origin_text: r.origin_text, trans_text: tr })
+                    }
                 }
             } else {
                 const csvRows = parseCsvRows(text)
@@ -457,32 +464,40 @@ export default function TranslateToolBar() {
                     }
                 }
 
+                // 与 JSON 分支同样的规则：缺译的片段用原文填回，保证表格结构完整；
+                // 只有真正翻译过至少一个片段才写库
                 for (const [id, parts] of longParts) {
-                    const tpl = rowById.get(id)?.text_template
-                    if (!tpl) continue
+                    const row = rowById.get(id)
+                    const tpl = row?.text_template
+                    if (!tpl || !row) continue
+                    const frags = extractTemplateAuto(row.origin_text, "ja", columnMode).placeholders
                     let assembled = tpl
-                    let changed = false
-                    for (const [tok, tr] of Object.entries(parts)) {
-                        if (!tr || !tr.trim()) continue
-                        // CSV 分支拿不到原片段，用模板占位符反查原文片段做校验
-                        const srcFrag = extractTemplateAuto(rowById.get(id)?.origin_text ?? "", "ja", columnMode).placeholders[tok]
-                        if (srcFrag !== undefined && !sameVarTokens(srcFrag, tr)) {
-                            varMismatch++
-                            continue
+                    let translatedAny = false
+                    for (const [tok, frag] of Object.entries(frags)) {
+                        const tr = parts[tok]
+                        const use = (tr && tr.trim()) ? tr : frag
+                        if (use !== frag) {
+                            if (!sameVarTokens(frag, use)) {
+                                varMismatch++
+                                assembled = assembled.split(tok).join(frag)
+                                continue
+                            }
+                            translatedAny = true
                         }
-                        assembled = assembled.split(tok).join(tr)
-                        changed = true
+                        assembled = assembled.split(tok).join(use)
                     }
-                    if (changed) {
-                        if (/\{[ej]?\d+\}/.test(assembled)) {
-                            skipped++
-                            continue
-                        }
-                        byId.push({ id, trans_text: assembled })
+                    if (!translatedAny) continue
+                    if (/\{[ej]?\d+\}/.test(assembled)) {
+                        skipped++
+                        continue
                     }
+                    byId.push({ id, trans_text: assembled })
                 }
                 for (const [id, v] of normal) {
                     if (longParts.has(id)) continue
+                    const row = rowById.get(id)
+                    // 译文与原文相同 = 没翻译，不写入（否则会把未翻译条目记成已修改）
+                    if (!row || v === row.origin_text) continue
                     byId.push({ id, trans_text: v })
                 }
             }

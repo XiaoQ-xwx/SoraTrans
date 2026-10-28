@@ -28,7 +28,9 @@ pub async fn select_distinct_types(
 
 /// 对象列表 + AI 可本地化行数 + 是否已有改动。
 /// 用一次聚合子查询 LEFT JOIN，避免对十几万对象逐行做相关子查询。
-/// is_mod = 该对象下有非空译文，或存在纹理补丁 —— 也就是"制作补丁会写进资源文件"的对象。
+/// is_mod = 该对象下有"真正翻译过"的文本，或存在纹理补丁 —— 也就是制作补丁会写进资源文件的对象。
+/// 注意条件里的 tt.text <> t.text：译文等于原文说明没翻过（比如未翻译语言的本地化表），
+/// 不算改动，否则列表里会满屏 "修改 *"，真正翻过的对象反而看不出来。
 /// 以前这个标记只存在前端内存里，重开应用就丢；改成由库统计后，导入译文后立刻就能看到。
 const OBJECT_LIST_BASE: &str = r#"
     SELECT assets_object.id, assets_object.name, assets_object.type, assets_object.path_id,
@@ -39,7 +41,8 @@ const OBJECT_LIST_BASE: &str = r#"
     LEFT JOIN (
         SELECT t.object_id AS oid,
                SUM(CASE WHEN p.localizable = 1 THEN 1 ELSE 0 END) AS loc_cnt,
-               SUM(CASE WHEN tt.text IS NOT NULL AND tt.text <> '' THEN 1 ELSE 0 END) AS tr_cnt
+               SUM(CASE WHEN tt.text IS NOT NULL AND tt.text <> '' AND tt.text <> t.text
+                        THEN 1 ELSE 0 END) AS tr_cnt
         FROM text_origin AS t
         JOIN text_pattern AS p ON p.id = t.pattern_id
         LEFT JOIN text_translate AS tt ON tt.origin_id = t.id
