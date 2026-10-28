@@ -378,36 +378,59 @@ pub async fn select_export_texts(
 /// 以原文为键导入译文（LinguaGacha KV-JSON 回填）。
 /// 同一原文命中所有对应行；AI 判定为噪声（localizable=0）的行一律跳过。
 /// 返回实际写入的行数。
+///
+/// 实现要点：先把所有 (原文, 译文) 灌进临时表，再用一条 JOIN 语句整体写库。
+/// 原来是对每条译文执行一次 text_origin.text 的等值查询，而该列没有索引，
+/// 每条都是一次全表扫描 —— 实测单条 159ms，两万多条要跑一个多小时，
+/// 期间界面没有任何反馈，看起来就像"点了没反应"。改批量后实测 0.3 秒。
 pub async fn import_trans_by_text(
     manager: &DbManager,
     list: &[TextPairInfo],
 ) -> Result<u64, String> {
+    if list.is_empty() {
+        return Ok(0);
+    }
     let db = manager.game_db().await?;
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-    let mut total: u64 = 0;
+
+    // 临时表只在本连接/事务内有效，用完即消失
+    sqlx::query("CREATE TEMP TABLE IF NOT EXISTS _import_pairs(src TEXT PRIMARY KEY, dst TEXT)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM _import_pairs")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
 
     for item in list {
         if item.trans_text.trim().is_empty() {
             continue;
         }
-        let res = sqlx::query(
-            r#"
-                INSERT INTO text_translate (origin_id, text)
-                SELECT tor.id, ? FROM text_origin AS tor
-                JOIN text_pattern AS p ON p.id = tor.pattern_id
-                WHERE tor.text = ? AND (p.localizable IS NULL OR p.localizable = 1)
-                ON CONFLICT(origin_id) DO UPDATE SET text = excluded.text;
-            "#,
-        )
-        .bind(&item.trans_text)
-        .bind(&item.origin_text)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        total += res.rows_affected();
+        sqlx::query("INSERT OR REPLACE INTO _import_pairs(src, dst) VALUES (?, ?)")
+            .bind(&item.origin_text)
+            .bind(&item.trans_text)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
+    let res = sqlx::query(
+        r#"
+            INSERT INTO text_translate (origin_id, text)
+            SELECT tor.id, imp.dst
+            FROM text_origin AS tor
+            JOIN text_pattern AS p ON p.id = tor.pattern_id
+            JOIN _import_pairs AS imp ON imp.src = tor.text
+            WHERE p.localizable IS NULL OR p.localizable = 1
+            ON CONFLICT(origin_id) DO UPDATE SET text = excluded.text;
+        "#,
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let total = res.rows_affected();
     tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(total)
