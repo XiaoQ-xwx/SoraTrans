@@ -139,7 +139,12 @@ impl DbManager {
 
         let pool = Self::create_pool(&path).await?;
 
-        sqlx::migrate!("./migrations")
+        // ignore_missing：用户库里可能存在"本地迁移目录里没有"的版本记录
+        // （用其它构建跑过的库会比本仓库多出若干迁移），sqlx 默认会因此直接报
+        // VersionMissing 拒绝打开。这里放行，保证老库仍能被当前代码打开。
+        let mut migrator = sqlx::migrate!("./migrations");
+        migrator.set_ignore_missing(true);
+        migrator
             .run(&pool)
             .await
             .map_err(|e| format!("执行数据库迁移失败: {}", e))?;
@@ -203,7 +208,12 @@ impl DbManager {
         let pool = Self::create_pool(&path).await?;
 
         // 不需要自己判断文件是否存在
-        sqlx::migrate!("./game_migrations")
+        // ignore_missing 同主库：用其它构建跑过的游戏库会多出本地没有的迁移
+        // 版本（例如 text_pattern 的 AI 相关列、text_origin 唯一索引），
+        // 不放行会直接 VersionMissing 打不开老库
+        let mut migrator = sqlx::migrate!("./game_migrations");
+        migrator.set_ignore_missing(true);
+        migrator
             .run(&pool)
             .await
             .map_err(|e| format!("执行数据库迁移失败: {}", e))?;

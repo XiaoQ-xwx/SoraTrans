@@ -141,8 +141,11 @@ export default function TextToolBar() {
             }
 
             // CSV 键格式：普通文本 "id,译文"；长文本 "id:{0},译文片段"，
-            // 按 id 分组后用模板重组完整译文
-            const LONG_KEY_PATTERN = /^(\d+):(\{\d+\})$/;
+            // 按 id 分组后用模板重组完整译文。
+            // 兼容"导出所有可本地化文本"生成的跨文件键 "{objectId}:{textId}" 与
+            // "{objectId}:{textId}:{0}"——textId 全局唯一，前缀只为方便人看，解析时忽略
+            const LONG_KEY_PATTERN = /^(?:\d+:)?(\d+):(\{\d+\})$/;
+            const PLAIN_KEY_PATTERN = /^(?:\d+:)?(\d+)$/;
             const normalMap = new Map<number, string>();
             const longParts = new Map<number, Record<string, string>>();
 
@@ -153,10 +156,11 @@ export default function TextToolBar() {
                     const parts = longParts.get(id) ?? {};
                     parts[match[2]] = value;
                     longParts.set(id, parts);
-                } else if (/^\d+$/.test(key)) {
-                    normalMap.set(Number(key), value);
+                } else if (PLAIN_KEY_PATTERN.test(key)) {
+                    const plain = PLAIN_KEY_PATTERN.exec(key);
+                    normalMap.set(Number(plain?.[1] ?? key), value);
                 } else {
-                    throw new Error(`无法识别的键 "${key}"，应为 id 或 id:{占位符}`);
+                    throw new Error(`无法识别的键 "${key}"，应为 id、id:{占位符}、objectId:id 或 objectId:id:{占位符}`);
                 }
             }
             const templateMap = await gm.selectTextTemplates([...longParts.keys()]);

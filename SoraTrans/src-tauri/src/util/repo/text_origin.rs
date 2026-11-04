@@ -164,6 +164,36 @@ pub async fn search_text_with_pattern_id(
     Ok(result)
 }
 
+/// 拉取超过指定长度的文本行，供导入译文时按"再提取模板"逐段重建
+/// 长文本导出时被拆成占位符片段，无法按整串原文匹配，必须单独处理
+pub async fn select_long_texts(
+    manager: &DbManager,
+    min_len: i64,
+) -> Result<Vec<TextOriginInfo>, String> {
+    let db = manager.game_db().await?;
+    let mut conn = db.acquire().await.map_err(|e| e.to_string())?;
+
+    let result = sqlx::query_as::<_, TextOriginInfo>(
+        r#"
+            SELECT
+                tor.id,
+                tor.text AS origin_text,
+                tor.text_template,
+                COALESCE(tt.text, '') AS trans_text
+            FROM text_origin AS tor
+            LEFT JOIN text_translate AS tt ON tt.origin_id = tor.id
+            WHERE LENGTH(tor.text) > ?
+            ORDER BY tor.id;
+        "#,
+    )
+    .bind(min_len)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(result)
+}
+
 /// 按 id 批量查询再提取模板，供导入长文本译文时回填占位符
 pub async fn select_text_templates(
     manager: &DbManager,

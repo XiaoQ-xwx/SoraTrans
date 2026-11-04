@@ -2,9 +2,10 @@ import AssetObjectInfo, { useAssetObjectStore } from "@/model/AssetObjectInfo";
 import { AssetObjSortMethod, gm } from "@/utils/GameDbManager";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDownIcon, FilterIcon, SearchIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MdArrowDownward, MdArrowUpward } from "react-icons/md";
 import SimpleBar from "simplebar-react";
+import { useJudgeProgress } from "@/utils/useJudgeProgress";
 
 interface AssetSelector {
     assets: { id: number, name: string }[]
@@ -18,19 +19,13 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
 
     const scrollRef = useRef<HTMLDivElement | null>(null);
 
-    const virtualizer = useVirtualizer({
-        count: list.length,
-        getScrollElement: () => scrollRef.current,
-        estimateSize: () => 28,
-        overscan: 12
-    });
 
     const [search, setSearch] = useState<string>("")
     const [isASC, setIsASC] = useState<boolean>()
     const [showFilter, setShowFilter] = useState(false)
     const [showAssetMenu, setShowAssetMenu] = useState(false)
-    // 列宽：名称 / 类型 / PathID / 大小 / 行数 / 修改
-    const [colWidths, setColWidths] = useState<number[]>([200, 70, 60, 50, 40, 30])
+    // 列宽：名称 / 类型 / PathID / 大小 / 行数 / 修改 / 可本地化
+    const [colWidths, setColWidths] = useState<number[]>([200, 70, 60, 50, 40, 30, 60])
     const [allTypes, setAllTypes] = useState<string[]>([])
     const [typeFilterReady, setTypeFilterReady] = useState(false)
     const currentSort = useAssetObjectStore((state)=> state.currentSort)
@@ -38,6 +33,44 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
     const setSelectAssetObj = useAssetObjectStore((state)=>state.setSelectAssetObj)
     const typeFilter = useAssetObjectStore((state)=>state.typeFilter)
     const setTypeFilter = useAssetObjectStore((state)=>state.setTypeFilter)
+    // AI 可本地化判定统计：objectId -> { total, localizable }
+    const [judgeStats, setJudgeStats] = useState<Map<number, { total: number, judged: number, localizable: number }>>(new Map())
+    // 判定结果写库后 version 自增，触发这里重新拉统计
+    const judgeVersion = useJudgeProgress((state) => state.version)
+
+    // 可本地化列的筛选/排序：点列头循环 无 → 降序(只显示可本地化) → 升序 → 无
+    const [localizableFilter, setLocalizableFilter] = useState<"none" | "desc" | "asc">("none")
+    const visibleList = useMemo(() => {
+        if (localizableFilter === "none") return list
+        const rows = list.filter((row) => (judgeStats.get(row.id)?.localizable ?? 0) > 0)
+        const dir = localizableFilter === "desc" ? -1 : 1
+        return [...rows].sort((a, b) =>
+            dir * ((judgeStats.get(a.id)?.localizable ?? 0) - (judgeStats.get(b.id)?.localizable ?? 0))
+        )
+    }, [list, localizableFilter, judgeStats])
+
+    const cycleLocalizableFilter = () => {
+        setLocalizableFilter((prev) => prev === "none" ? "desc" : prev === "desc" ? "asc" : "none")
+    }
+
+    const virtualizer = useVirtualizer({
+        count: visibleList.length,
+        getScrollElement: () => scrollRef.current,
+        estimateSize: () => 28,
+        overscan: 12
+    });
+
+
+    useEffect(() => {
+        let alive = true
+        gm.selectObjectJudgeStats().then((list) => {
+            if (!alive) return
+            setJudgeStats(new Map(list.map((item) => [item.object_id, { total: item.total, judged: item.judged, localizable: item.localizable }])))
+        }).catch(() => {
+            // 游戏库未初始化时忽略，资源列表照常显示
+        })
+        return () => { alive = false }
+    }, [id, judgeVersion])
 
     // 独立查询全部类型，不随过滤变化——避免勾选一个类型后菜单选项跟着变
     useEffect(() => {
@@ -184,6 +217,14 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                     )
                 }
                 <div className="flex items-center gap-1">
+                    <button
+                        onClick={cycleLocalizableFilter}
+                        title="只显示存在可本地化文本的资源对象，并按可本地化数量排序"
+                        className={`flex h-[20px] px-1.5 border rounded-sm items-center gap-1 text-[9px] ${localizableFilter !== "none" ? "border-emerald-400 bg-emerald-50 text-emerald-600" : "text-neutral-500 hover:bg-muted/50"}`}
+                    >
+                        <span className={`size-1.5 rounded-full ${localizableFilter !== "none" ? "bg-emerald-500" : "bg-neutral-300"}`} />
+                        查看可本地化
+                    </button>
                     <div className="relative">
                         <button onClick={() => setShowFilter(!showFilter)} className="flex h-[20px] w-[20px] border rounded-sm items-center justify-center text-[10px] text-neutral-500 hover:bg-muted/50">
                             <FilterIcon className="size-2" />
@@ -252,9 +293,19 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                     {currentSort == AssetObjSortMethod.ModDown && (<MdArrowDownward className="shrink-0" />)}
                     <ColResizer idx={5} />
                 </div>
+                <div
+                    onClick={cycleLocalizableFilter}
+                    title="点击：筛选出可本地化对象，并按可本地化数量降序/升序排列"
+                    className="relative flex items-center cursor-pointer select-none overflow-hidden"
+                >
+                    <span className="truncate">可本地化</span>
+                    {localizableFilter === "desc" && (<MdArrowDownward className="shrink-0" />)}
+                    {localizableFilter === "asc" && (<MdArrowUpward className="shrink-0" />)}
+                    <ColResizer idx={6} />
+                </div>
             </div>
             {
-                list.length > 0 ? (
+                visibleList.length > 0 ? (
                     <SimpleBar className="h-full w-full overflow-x-hidden">
                         {({ scrollableNodeProps, contentNodeProps }) => (
                             <div
@@ -272,7 +323,10 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                                 >
                                     <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: 'relative' }}>
                                         {virtualizer.getVirtualItems().map((vi) => {
-                                            const row = list[vi.index];
+                                            const row = visibleList[vi.index];
+                                            // 过滤切换瞬间可能出现索引越界，跳过即可，避免整页白屏
+                                            if (!row) return null;
+                                            const judgeStat = judgeStats.get(row.id);
                                             return (
                                                 <div key={vi.key} onClick={()=>setSelectAssetObj(row)} className="text-xs px-2 gap-2 border-b grid hover:bg-muted/50"
                                                     style={{ gridTemplateColumns: colTemplate, position: 'absolute', top: 0, left: 0, width: '100%', height: vi.size, alignItems: 'center', transform: `translateY(${vi.start}px)` }}>
@@ -282,6 +336,12 @@ export default function AssetObjTable({ list, name, id, assetSelector }: {
                                                     <div className="font-mono select-none">{row.size}</div>
                                                     <div className="font-mono select-none">{row.line_count}</div>
                                                     <div className="font-mono select-none">{row.isMod ? "*" : ""}</div>
+                                                    <div
+                                                        title={judgeStat ? `已判定 ${judgeStat.judged}/${judgeStat.total} 条` : "尚未判定"}
+                                                        className={`font-mono select-none truncate ${judgeStat && judgeStat.localizable > 0 ? "text-emerald-600" : "text-neutral-300"}`}
+                                                    >
+                                                        {judgeStat ? `${judgeStat.localizable}/${judgeStat.total}` : "-"}
+                                                    </div>
                                                 </div>
                                             );
                                         })}

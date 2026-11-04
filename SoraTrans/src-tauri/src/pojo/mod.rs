@@ -7,3 +7,6 @@ pub mod asset_object_info;
 pub mod pattern_tree_info;
 pub mod text_origin_info;
 pub mod text_template_info;
+pub mod judge_info;
+pub mod app_setting_info;
+pub mod text_pair_info;

@@ -83,7 +83,7 @@ export function PatchDialog({ open, phase, errorMsg, dir, onOpenChange }: PatchD
                                 </div>
                                 <div className="flex flex-col justify-center gap-1 pt-1 min-w-0">
                                     <div className="text-sm leading-none font-semibold">补丁制作完成</div>
-                                    <div className="text-[8px] text-muted-foreground">补丁包已生成，可直接安装使用</div>
+                                    <div className="text-[8px] text-muted-foreground">已按游戏目录结构生成，整体覆盖回游戏根目录即可</div>
                                 </div>
                             </div>
                             <div className="mt-4 min-w-0 rounded-lg bg-muted/50 p-2.5">

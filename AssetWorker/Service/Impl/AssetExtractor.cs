@@ -533,6 +533,46 @@ namespace AssetWorker.Service.Impl
             try { manager.UnloadAssetsFile(path); } catch { }
         }
 
+        /// <summary>
+        /// 卸载所有与 path 同名的已加载 assets 文件，必须在 LoadAssetsFile 之前调用。
+        /// AssetsManager 按"文件名"缓存已加载的 assets 文件，而 LoadAssetsFile(loadDeps:true)
+        /// 会把依赖一并载入缓存 —— 一个游戏目录下并存多个 *_Data（游戏本体与自带的辅助工具）
+        /// 时，两边的 resources.assets 同名，加载后者会命中前者的缓存实例，随后按 pathId
+        /// 取到的是另一个文件里同 id 的对象（类型都对不上，m_Script 这类字段的 Value 为 null），
+        /// 写字段时直接抛 NullReferenceException 导致补丁制作 500。
+        /// </summary>
+        internal static void UnloadSameNameAssetsFile(AssetsManager manager, string path)
+        {
+            var fileName = Path.GetFileName(path);
+            if (string.IsNullOrEmpty(fileName))
+            {
+                return;
+            }
+
+            foreach (var inst in manager.Files.ToList())
+            {
+                // 只看磁盘上的松散文件：bundle 内部的条目路径形如 archive:/CAB-xxx/xxx，
+                // 由所属 bundle 自己管理，按文件名误伤会把正在用的 bundle 内部文件卸掉
+                if (inst.path == null ||
+                    inst.path.StartsWith("archive:", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(
+                        Path.GetFileName(inst.path), fileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // 目标文件自己不动：调用方可能正好复用它已加载的实例，
+                // 卸掉会把流关掉，后续访问变成 "access a closed file"
+                if (string.Equals(inst.path, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                SafeUnloadAssetsFile(manager, inst.path);
+            }
+        }
+
+
         internal static void SafeUnloadBundleFile(AssetsManager manager, string path)
         {
             try { manager.UnloadBundleFile(path); } catch { }

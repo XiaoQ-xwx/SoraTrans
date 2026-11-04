@@ -4,3 +4,5 @@ pub mod tag;
 pub mod assets_object;
 pub mod text_origin;
 pub mod text_translate;
+pub mod text_judge;
+pub mod app_setting;
