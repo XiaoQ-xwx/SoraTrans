@@ -49,6 +49,12 @@
         },
         {
           "url": "http://localhost:5089/api/command/*"
+        },
+        {
+          "url": "https://**"
+        },
+        {
+          "url": "http://**"
         }
       ],
       "deny": [

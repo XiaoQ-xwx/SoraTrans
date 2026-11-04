@@ -359,7 +359,7 @@ namespace AssetWorker.Service.Impl
                         AssetsFileInstance? fileInst = null;
                         try
                         {
-                            fileInst = manager.LoadAssetsFile(item.AssetPath, true);
+                            fileInst = LoadAssetsFileSafe(item.AssetPath, true);
                             foreach (var extractItem in extractor.ExtractAsset(session.CurrentDbPath, fileInst, item))
                             {
                                 switch (extractItem.type)
@@ -524,7 +524,7 @@ namespace AssetWorker.Service.Impl
                 AssetsFileInstance? assetInst = null;
                 try
                 {
-                    assetInst = manager.LoadAssetsFile(info.AssetPath);
+                    assetInst = LoadAssetsFileSafe(info.AssetPath, false);
                     foreach (var item in dataViewer.LoadComponent(assetInst, info.AssetObjPathId))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -575,7 +575,7 @@ namespace AssetWorker.Service.Impl
                 AssetsFileInstance? assetInst = null;
                 try
                 {
-                    assetInst = manager.LoadAssetsFile(info.AssetPath);
+                    assetInst = LoadAssetsFileSafe(info.AssetPath, false);
                     cancellationToken.ThrowIfCancellationRequested();
                     return previewer.DecodeToPng(assetInst, info.AssetObjPathId);
                 }
@@ -642,7 +642,7 @@ namespace AssetWorker.Service.Impl
                 AssetsFileInstance? fileInst = null;
                 try
                 {
-                    fileInst = manager.LoadAssetsFile(info.AssetPath, true);
+                    fileInst = LoadAssetsFileSafe(info.AssetPath, true);
                     cancellationToken.ThrowIfCancellationRequested();
 
                     var encoded = previewer.EncodePngToTextureData(fileInst, info.AssetObjPathId, pngData);
@@ -751,13 +751,14 @@ namespace AssetWorker.Service.Impl
                     AssetsFileInstance? fileInst = null;
                     var texts = assetTextSet.GetValueOrDefault(key) ?? [];
                     var textures = assetTextureSet.GetValueOrDefault(key) ?? [];
-                    // 取第一条记录的 AssetName 做输出文件名（同 key 下一致）
-                    var assetName = texts.Count > 0 ? texts[0].AssetName : textures[0].AssetName;
-                    var tmpPath = Path.Combine(outDir, assetName + ".tmp");
-                    var outPath = Path.Combine(outDir, assetName);
+                    // 输出路径保留相对游戏根目录的层级：多个 *_Data 目录（游戏本体与
+                    // 自带的辅助工具）下都有 resources.assets 之类的同名文件，扁平输出
+                    // 会让后写的一方静默覆盖先写的
+                    var outPath = BuildPatchOutPath(outDir, key);
+                    var tmpPath = outPath + ".tmp";
                     try
                     {
-                        fileInst = manager.LoadAssetsFile(key, true);
+                        fileInst = LoadAssetsFileSafe(key, true);
                         assetWriter.MakeAssetPatch(fileInst, texts, textures, tmpPath);
                         File.Move(tmpPath, outPath, true);
                     }
@@ -797,13 +798,9 @@ namespace AssetWorker.Service.Impl
                     try
                     {
                         bunInst = manager.LoadBundleFile(bundlePath, true);
-                        // 取第一条记录的 BundleName 做输出文件名
-                        var firstKey = assetNames[0];
-                        var firstText = bundleTextSet.GetValueOrDefault(firstKey)?.FirstOrDefault();
-                        var firstTex = bundleTextureSet.GetValueOrDefault(firstKey)?.FirstOrDefault();
-                        var bundleName = firstText?.BundleName ?? firstTex?.BundleName ?? "";
-                        tmpPath = Path.Combine(outDir, bundleName + ".tmp");
-                        var outPath = Path.Combine(outDir, bundleName);
+                        // bundle 同样保留相对游戏根目录的层级，避免同名 bundle 互相覆盖
+                        var outPath = BuildPatchOutPath(outDir, bundlePath);
+                        tmpPath = outPath + ".tmp";
 
                         // 对同一 bundle 的每个 assets 文件应用补丁（不写磁盘）
                         foreach (var assetName in assetNames)
@@ -834,6 +831,58 @@ namespace AssetWorker.Service.Impl
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
             }
+        }
+
+        /// <summary>
+        /// 统一的 assets 加载入口：加载前先卸掉同名（另一个 *_Data 目录下）的缓存实例。
+        /// AssetsManager 按文件名缓存已加载文件，且 loadDeps 会把依赖重新装回缓存 ——
+        /// 游戏本体与自带辅助工具的目录里都有 resources.assets 时，不清理就会拿到
+        /// 另一个文件里同 pathId 的对象（类型对不上，写字段时直接 NRE）。
+        /// 详见 AssetExtractor.UnloadSameNameAssetsFile 注释。
+        /// </summary>
+        private AssetsFileInstance LoadAssetsFileSafe(string? path, bool loadDeps)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                throw new ArgumentNullException(nameof(path), "资源路径为空，无法加载");
+            }
+
+            AssetExtractor.UnloadSameNameAssetsFile(manager, path);
+            return manager.LoadAssetsFile(path, loadDeps);
+        }
+
+        /// <summary>
+        /// 计算补丁文件的输出路径：保留资源相对游戏根目录的目录层级。
+        /// 多个 *_Data 目录（例如游戏本体与其自带的修复工具 M-Aid）中可能存在同名资源
+        /// 文件，扁平输出会让后写的补丁静默覆盖先写的，且用户无法判断补丁该覆盖回哪个
+        /// 目录；保留层级后，把 SoraTransOutput 里的内容整体覆盖回游戏根目录即可。
+        /// 资源不在游戏根目录内时回退为纯文件名，避免补丁被写到输出目录之外。
+        /// </summary>
+        private string BuildPatchOutPath(string outDir, string assetPath)
+        {
+            var relative = Path.GetFileName(assetPath);
+            if (!string.IsNullOrEmpty(path))
+            {
+                var rel = Path.GetRelativePath(path, assetPath);
+                // 判"越界"不能用 rel.StartsWith("..")：根目录下名为 "..cache" 的目录
+                // 会被误判，层级丢失后同名文件又会互相覆盖
+                if (rel != ".." &&
+                    !rel.StartsWith(".." + Path.DirectorySeparatorChar) &&
+                    !rel.StartsWith(".." + Path.AltDirectorySeparatorChar) &&
+                    !Path.IsPathRooted(rel))
+                {
+                    relative = rel;
+                }
+            }
+
+            var outPath = Path.Combine(outDir, relative);
+            // 只有文件名时 GetDirectoryName 返回空串，此时输出目录已存在无需创建
+            var parent = Path.GetDirectoryName(outPath);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                Directory.CreateDirectory(parent);
+            }
+            return outPath;
         }
 
         public void PauseScan()

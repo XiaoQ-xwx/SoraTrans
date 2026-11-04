@@ -7,6 +7,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import { join } from '@tauri-apps/api/path';
 import { assetApi } from "@/utils/AssetApi";
 import { PatchDialog, PatchPhase } from "./PatchDialog";
+import LocalizablePanel from "./LocalizablePanel";
 
 // 与 AssetWorker 端 AssetScanner.OutputFolderName 保持一致
 const OUTPUT_FOLDER_NAME = "SoraTransOutput";
@@ -123,7 +124,8 @@ export default function TranslateToolBar() {
         setTextureBusy(true);
         setTextureMsg(null);
         try {
-            const result = await assetApi.importTexture(selectAssetObj.id, pngPath);
+            // 导入结果（宽高/格式）暂未展示，这里只需要它成功返回
+            await assetApi.importTexture(selectAssetObj.id, pngPath);
             useAssetObjectStore.getState().setModInfo(selectAssetObj.id);
         } catch (e) {
             setTextureMsg({ kind: "err", text: e instanceof Error ? e.message : String(e) });
@@ -221,6 +223,7 @@ export default function TranslateToolBar() {
                     </p>
                 )}
             </div>
+            <LocalizablePanel />
             <PatchDialog open={patchOpen} phase={patchPhase} errorMsg={patchError} dir={patchDir} onOpenChange={setPatchOpen} />
         </div>
     )

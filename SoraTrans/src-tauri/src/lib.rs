@@ -4,6 +4,9 @@ use pojo::{
     asset_info::AssetInfo, pattern_tree_info::PatternTreeInfo, project_info::ProjectInfo,
     scan_info::ScanInfo, scan_status::ScanStatus, tag_info::TagInfo,
     text_origin_info::TextOriginInfo, text_template_info::TextTemplateInfo,
+    app_setting_info::AppSettingInfo,
+    text_pair_info::TextPairInfo,
+    judge_info::{JudgeProgressInfo, JudgeTargetInfo, LocalizableTextInfo, ObjectJudgeStat, TextJudgeInfo},
 };
 use std::path::Path;
 use serde::{Serialize};
@@ -11,7 +14,7 @@ use tauri::{Manager, State, WindowEvent, App, AppHandle, Emitter};
 use tauri_plugin_log::log;
 use util::{
     db_manager, get_app_info, get_scan_dir,
-    repo::{assets, assets_object, project, tag, text_origin, text_translate},
+    repo::{app_setting, assets, assets_object, project, tag, text_judge, text_origin, text_translate},
     run_app, save_icon, worker,
 };
 
@@ -350,6 +353,105 @@ async fn select_text_templates(
     text_origin::select_text_templates(&manager, ids).await
 }
 
+// ============ 译文导入 ============
+
+/// 按"原文"批量回写译文（KV JSON 导入主路径），返回写入行数
+#[tauri::command]
+async fn import_trans_by_text(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<TextPairInfo>,
+) -> Result<i64, String> {
+    text_translate::insert_trans_by_text(&manager, list).await
+}
+
+/// 批量回写译文（长文本按模板重建后走这里），不触发 setMod 事件
+#[tauri::command]
+async fn insert_batch_trans_simple(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<TextOriginInfo>,
+) -> Result<(), String> {
+    text_translate::insert_batch_trans(&manager, list).await
+}
+
+/// 拉取超过指定长度的文本行，供导入时按再提取模板逐段重建
+#[tauri::command]
+async fn select_long_texts(
+    manager: State<'_, db_manager::DbManager>,
+    min_len: i64,
+) -> Result<Vec<TextOriginInfo>, String> {
+    text_origin::select_long_texts(&manager, min_len).await
+}
+
+// ============ AI 可本地化判定 ============
+
+/// 分批拉取待判定文本（after_id 为 id 游标，only_unjudged=true 只取未判定项）
+#[tauri::command]
+async fn select_judge_targets(
+    manager: State<'_, db_manager::DbManager>,
+    after_id: i64,
+    limit: i64,
+    only_unjudged: bool,
+) -> Result<Vec<JudgeTargetInfo>, String> {
+    text_judge::select_judge_targets(&manager, after_id, limit, only_unjudged).await
+}
+
+/// 批量回写判定结果
+#[tauri::command]
+async fn insert_judge_results(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<TextJudgeInfo>,
+) -> Result<(), String> {
+    text_judge::insert_judge_results(&manager, list).await
+}
+
+/// 按文件聚合的可本地化统计（资源列表展示用）
+#[tauri::command]
+async fn select_object_judge_stats(
+    manager: State<'_, db_manager::DbManager>,
+) -> Result<Vec<ObjectJudgeStat>, String> {
+    text_judge::select_object_judge_stats(&manager).await
+}
+
+/// 判定进度
+#[tauri::command]
+async fn select_judge_progress(
+    manager: State<'_, db_manager::DbManager>,
+) -> Result<JudgeProgressInfo, String> {
+    text_judge::select_judge_progress(&manager).await
+}
+
+/// 清空判定结果
+#[tauri::command]
+async fn clear_judge_results(manager: State<'_, db_manager::DbManager>) -> Result<(), String> {
+    text_judge::clear_judge_results(&manager).await
+}
+
+/// 拉取导出用文本（一键导出）；only_localizable=true 只取可本地化的
+#[tauri::command]
+async fn select_export_texts(
+    manager: State<'_, db_manager::DbManager>,
+    only_localizable: bool,
+) -> Result<Vec<LocalizableTextInfo>, String> {
+    text_judge::select_export_texts(&manager, only_localizable).await
+}
+
+// ============ 应用设置（模型 API 配置） ============
+
+#[tauri::command]
+async fn select_app_settings(
+    manager: State<'_, db_manager::DbManager>,
+) -> Result<Vec<AppSettingInfo>, String> {
+    app_setting::select_app_settings(&manager).await
+}
+
+#[tauri::command]
+async fn save_app_settings(
+    manager: State<'_, db_manager::DbManager>,
+    list: Vec<AppSettingInfo>,
+) -> Result<(), String> {
+    app_setting::save_app_settings(&manager, list).await
+}
+
 async fn close_all_db(manager: &db_manager::DbManager) -> Result<(), String> {
     manager.close().await;
     Ok(())
@@ -362,9 +464,24 @@ struct AssetWorkerProcess(std::sync::Mutex<Option<tauri_plugin_shell::process::C
 // sidecar() 只传文件名，运行时解析为 <主程序目录>/AssetWorker.exe；
 // classdata.tpk / e_sqlite3.dll 作为 resources 打包到同级目录，与其 AppContext.BaseDirectory 一致。
 // 必须显式传 --urls：launchSettings.json 仅对 dotnet run 生效，直接运行 exe 默认监听 5000。
+/// 5090 端口是否已被占用（通常是开发者自己 dotnet run 起了 sidecar）
+fn port_in_use(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
 fn spawn_asset_worker(app: &mut App) {
     use tauri_plugin_shell::process::CommandEvent;
     use tauri_plugin_shell::ShellExt;
+
+    // 端口已被占用时不再拉起第二个 sidecar：否则 Kestrel 绑定失败直接退出，
+    // 前端请求也会打到"别人"起的那个实例上，状态混乱且难以排查
+    if port_in_use(5089) {
+        log::info!("5089 端口已被占用，跳过启动内置 AssetWorker sidecar");
+        return;
+    }
 
     let command = match app.shell().sidecar("AssetWorker") {
         Ok(cmd) => cmd.args(["--urls", "http://localhost:5089"]),
@@ -426,7 +543,9 @@ pub fn run() {
         .manage(manager)
         .manage(AssetWorkerProcess(Default::default()))
         .setup(move |app| {
-            // spawn_asset_worker(app);
+            // 打包后的程序必须自己拉起 AssetWorker，否则前端所有 http://localhost:5089
+            // 请求都会失败（表现为"点扫描没反应"）
+            spawn_asset_worker(app);
 
             let manager = manager_for_setup.clone();
 
@@ -509,7 +628,18 @@ pub fn run() {
             insert_trans,
             insert_batch_trans,
             update_text_templates,
-            select_text_templates
+            select_text_templates,
+            select_judge_targets,
+            insert_judge_results,
+            select_object_judge_stats,
+            select_judge_progress,
+            clear_judge_results,
+            select_export_texts,
+            select_app_settings,
+            save_app_settings,
+            import_trans_by_text,
+            insert_batch_trans_simple,
+            select_long_texts
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

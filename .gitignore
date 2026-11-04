@@ -21,3 +21,12 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+# Claude Code 个人指令文件
+CLAUDE.local.md
+# Claude Code 生成的仓库说明（AGENTS.md 是指向 CLAUDE.md 的符号链接，
+# 本仓库 core.symlinks=false，提交进去会变成内容只含目标路径的普通文本文件）
+CLAUDE.md
+AGENTS.md
+# 本地备份与快捷方式
+backups/
+*.lnk

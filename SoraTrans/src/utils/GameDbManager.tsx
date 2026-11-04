@@ -4,6 +4,7 @@ import AssetInfo from '@/model/AssetInfo';
 import { FileTreeItem, useFileTreeStore } from '@/components/FileTree';
 import AssetObjectInfo, { useAssetObjectStore } from '@/model/AssetObjectInfo';
 import { TextOrigin, useTextOriginStore } from '@/model/TextOrigin';
+import type { JudgeProgressInfo, JudgeTargetInfo, LocalizableTextInfo, ObjectJudgeStat, TextJudgeInfo } from '@/model/JudgeInfo';
 import { invoke } from '@tauri-apps/api/core';
 
 enum AssetObjSortMethod {
@@ -285,6 +286,12 @@ class GameDbManager {
         }
     }
 
+    // 同上，但失败直接上抛：导出可本地化文本时模板写不进去，
+    // 这份 CSV import 回来就会报"缺少再提取模板"，必须让用户看到
+    async updateTextTemplatesStrict(list: { id: number, text_template: string }[]): Promise<void> {
+        await invoke("update_text_templates", { list })
+    }
+
     // 按 id 批量查询再提取模板，返回 id -> template；查询失败直接抛出，
     // 让导入流程整体报错，避免缺模板时静默生成错误译文
     async selectTextTemplates(ids: number[]): Promise<Map<number, string>> {
@@ -293,6 +300,57 @@ class GameDbManager {
             { ids }
         );
         return new Map(res.map(item => [item.id, item.text_template]));
+    }
+
+    // ============ AI 可本地化判定 ============
+    // 判定相关命令不吞异常：判定流程需要把"游戏库未初始化/写库失败"
+    // 等真实原因抛到界面，而不是静默中断
+
+    // 游标分批拉取待判定文本；onlyUnjudged = true 时只取还没有判定结果的条目
+    async selectJudgeTargets(afterId: number, limit: number, onlyUnjudged: boolean): Promise<JudgeTargetInfo[]> {
+        return await invoke<JudgeTargetInfo[]>("select_judge_targets", { afterId, limit, onlyUnjudged })
+    }
+
+    // 批量回写判定结果
+    async insertJudgeResults(list: TextJudgeInfo[]): Promise<void> {
+        await invoke("insert_judge_results", { list })
+    }
+
+    // 按文件聚合的可本地化统计，资源列表展示 "可本地化数/已判定数"
+    async selectObjectJudgeStats(): Promise<ObjectJudgeStat[]> {
+        return await invoke<ObjectJudgeStat[]>("select_object_judge_stats")
+    }
+
+    // 判定进度
+    async selectJudgeProgress(): Promise<JudgeProgressInfo> {
+        return await invoke<JudgeProgressInfo>("select_judge_progress")
+    }
+
+    // 清空判定结果，供重新判定
+    async clearJudgeResults(): Promise<void> {
+        await invoke("clear_judge_results")
+    }
+
+    // 拉取导出用文本（一键导出）；onlyLocalizable=true 时只取判定为可本地化的
+    async selectExportTexts(onlyLocalizable: boolean): Promise<LocalizableTextInfo[]> {
+        return await invoke<LocalizableTextInfo[]>("select_export_texts", { onlyLocalizable })
+    }
+
+    // ============ 译文导入 ============
+
+    // 拉取超过指定长度的文本行，导入时按再提取模板逐段重建
+    async selectLongTexts(minLen: number): Promise<TextOrigin[]> {
+        return await invoke<TextOrigin[]>("select_long_texts", { minLen })
+    }
+
+    // 按"原文"批量回写译文，返回实际写入的文本行数
+    async importTransByText(list: { src: string, dst: string }[]): Promise<number> {
+        return await invoke<number>("import_trans_by_text", { list })
+    }
+
+    // 静默批量写译文（不触发 setMod 事件，跨文件导入用）
+    async insertBatchTransSimple(list: TextOrigin[]): Promise<void> {
+        await invoke("insert_batch_trans_simple", { list })
     }
 }
 
